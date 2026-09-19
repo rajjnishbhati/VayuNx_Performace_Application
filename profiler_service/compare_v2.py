@@ -204,9 +204,13 @@ def _verdict(rows: list[dict], ref: dict, op_noun: str) -> str:
             continue
         if vs["significant"] is False:
             parts.append(f"{row['label']} and {ref['label']} are not significantly different in these trials.")
-        elif vs["time_ratio"] > 1 and row.get("family") == "password-hash":
+        elif vs["time_ratio"] > 1 and row.get("family") == "password-hash" and ref.get("family") != "password-hash":
             parts.append(f"{row['label']} is {vs['time_change']} than {ref['label']}, which is expected: "
                          "password hashes are slow on purpose.")
+        elif "×" in vs["time_change"]:  # e.g. the same password hash in two runtimes: the difference is the finding
+            parts.append(f"{row['label']} is {vs['time_change']} than {ref['label']}.")
+        else:
+            parts.append(f"{row['label']} differs from {ref['label']} by {vs['time_change']} per {op_noun}.")
     if any(row["flags"] for row in rows):
         parts.append("Some numbers are flagged as weak data.")
     return " ".join(parts)

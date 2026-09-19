@@ -153,3 +153,15 @@ def test_memory_per_op_uses_peak_minus_baseline():
     r = compare(md5_trials() + argon_trials(), reference_key="md5")
     mem = variant(r, "argon2id-rfc9106-low")["memory"]
     assert mem["peak_rss_bytes"] == 98 * MIB and mem["mem_per_op_bytes"] == 68 * MIB and mem["approximate"] is False
+
+
+def test_verdict_between_two_password_hashes_states_the_difference_plainly():
+    """Same algorithm, two runtimes: a 2x difference is a finding, not 'slow on purpose'."""
+    py = trials("argon2id-owasp", "Argon2id (Python)", [31.8e6, 31.9e6, 32.0e6, 31.7e6, 31.9e6], preset_id="argon2id-owasp")
+    node = trials("argon2id-owasp@node", "Argon2id (Node.js)", [71.4e6, 70.9e6, 72.0e6, 71.1e6, 71.6e6],
+                  preset_id="argon2id-owasp")
+    v = compare(py + node, reference_key="argon2id-owasp")["verdict"]
+    assert "slow on purpose" not in v
+    assert re.search(r"Argon2id \(Node\.js\) is 2\.\d× slower than Argon2id \(Python\)\.", v)
+    v = compare(py + node, reference_key="argon2id-owasp@node")["verdict"]
+    assert re.search(r"Argon2id \(Python\) is 2\.\d× faster than Argon2id \(Node\.js\)\.", v)
