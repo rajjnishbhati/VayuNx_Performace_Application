@@ -126,6 +126,17 @@ project. API: `GET /v2/projects/{id}/retention/preview?days=N` (counts only), `P
 `{"days": N | null}`. `VAYUNX_RETENTION=off` stops all purges; `VAYUNX_RETENTION_INTERVAL_S` changes the hourly
 schedule.
 
+**Exports (Phase 4).** Every comparison has **Download: PDF report · Scorecard (CSV) · Per-trial data (CSV)**
+under its scorecard. The Runs page downloads the filtered run list. The files are built from the same response as the
+screen, through the same access checks: `GET /v2/compare.pdf|compare.csv?experiment_id=` (or `run_ids=`,
+`&kind=trials`), `GET /v2/runs.csv`. The PDF, generated in the service with ReportLab, carries:
+- the verdict and the machine the numbers came from;
+- the scorecard and a time-per-call chart (grey reference, validated palette);
+- weak-data flags, security notes, capacity and the method.
+
+In the CSV files, text a spreadsheet would run as a formula (starting with `=` `+` `-` `@`) gets a leading
+apostrophe. The only exception is the exact change format this service writes (`+15.8%`).
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)

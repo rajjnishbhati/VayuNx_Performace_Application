@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 service = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6", "opentelemetry-proto==1.44.0",
-           "alembic>=1.13", "PyJWT[crypto]>=2.8"]
+           "alembic>=1.13", "PyJWT[crypto]>=2.8", "reportlab>=4.2"]
 # Postgres driver (VAYUNX_PROFILER_DB_URL=postgresql+psycopg://...)
 postgres = ["psycopg[binary]>=3.2"]
 # the OpenTelemetry-based SDK (`vayunx` package, spec F)

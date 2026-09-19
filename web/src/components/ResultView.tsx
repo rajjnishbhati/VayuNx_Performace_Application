@@ -122,7 +122,7 @@ function MachineTab({ r, ts, tsLoading, colors }: { r: CompareResult; ts: Timese
       <div>
         <p className="ink2">Per variant, from the SDK sampler while crypto was running (approximate):</p>
         <ul>{r.variants.map((v) => <li key={v.key}><Swatch color={colors[v.key]} />{v.label}: {fmtCores(v.cpu.cores_busy)} cores busy, peak ≈ {fmtBytes(v.memory.peak_rss_bytes)}</li>)}</ul>
-        <p className="muted" style={{ fontSize: 12 }}>A time-series view of app runs comes with the Phase 3 SDKs.</p>
+        <p className="muted" style={{ fontSize: 12 }}>The SDKs send these gauges every second; a time-series chart for app runs is not built yet (the per-run samples are in the CSV/API: GET /v2/runs/&#123;id&#125;/samples).</p>
       </div>
     );
   }
@@ -288,6 +288,23 @@ function Details({ r }: { r: CompareResult }) {
   );
 }
 
+/** Downloads of exactly this comparison (same parameters as the screen). */
+function Exports({ r }: { r: CompareResult }) {
+  const q = new URLSearchParams();
+  if (r.experiment) q.set("experiment_id", r.experiment.experiment_id);
+  else if (r.runs) q.set("run_ids", r.runs.map((x) => x.run_id).join(","));
+  q.set("reference", r.reference);
+  const link = (path: string, extra = "") => `/api/v2/${path}?${q}${extra}`;
+  return (
+    <div className="row" style={{ gap: 12, fontSize: 13, marginTop: 8 }} aria-label="Download this comparison">
+      <span className="muted">Download:</span>
+      <a href={link("compare.pdf")} download>PDF report</a>
+      <a href={link("compare.csv")} download>Scorecard (CSV)</a>
+      <a href={link("compare.csv", "&kind=trials")} download>Per-trial data (CSV)</a>
+    </div>
+  );
+}
+
 export default function ResultView({ result, ts, tsLoading, onReference }: {
   result: CompareResult; ts: Timeseries | null; tsLoading: boolean; onReference?: (key: string) => void;
 }) {
@@ -300,6 +317,7 @@ export default function ResultView({ result, ts, tsLoading, onReference }: {
         <h2 id="verdict-title" className="sr-only">Result</h2>
         <p className="verdict" aria-live="polite">{result.verdict}</p>
         <Scorecard r={result} colors={colors} onReference={onReference} />
+        <Exports r={result} />
       </section>
       <section className="card">
         <Tabs active={tab} onChange={setTab} tabs={[

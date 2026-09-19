@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "@/components/States";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, currentProject } from "@/lib/api";
 import { fmtDate } from "@/lib/format";
 import type { Experiment, Page, RunItem } from "@/lib/types";
 
@@ -52,10 +52,24 @@ export default function RunsPage() {
     return null;
   })();
 
+  const csvQuery = (() => {
+    const qs = new URLSearchParams();
+    if (q) qs.set("q", q);
+    if (source) qs.set("source", source);
+    if (service) qs.set("service", service);
+    if (algorithm) qs.set("algorithm", algorithm);
+    const project = currentProject();
+    if (project) qs.set("project", project);
+    return qs.toString();
+  })();
+
   return (
     <div className="page">
       <h1>Runs</h1>
-      <p className="muted">Search every recorded run. Select two or more to compare them.</p>
+      <p className="muted">
+        Search every recorded run. Select two or more to compare them.{" "}
+        <a href={`/api/v2/runs.csv?${csvQuery}`} download>Download these runs (CSV)</a>
+      </p>
 
       {exps.length > 0 && (
         <section className="card" aria-labelledby="exp-title">

@@ -25,6 +25,7 @@ from profiler_service.auth import AuthConfig
 from profiler_service.auth import install as install_auth
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
 from profiler_service.lab_jobs import LabJobs
+from profiler_service.exports import router as exports_router
 from profiler_service.otlp import router as otlp_router
 from profiler_service.retention import RetentionScheduler
 from profiler_service.models import OpStat, Run, Sample, Span
@@ -73,6 +74,7 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
                               "Sign-in (OIDC) and API tokens when VAYUNX_AUTH=oidc; open otherwise.")
     app.include_router(v2_router)
     app.include_router(access_router)  # /v2/projects, /v2/teams, /v2/users
+    app.include_router(exports_router)  # /v2/compare.csv, /v2/compare.pdf, /v2/runs.csv
     app.include_router(otlp_router)  # OTLP/HTTP: POST /v1/traces, POST /v1/metrics
 
     @app.exception_handler(RequestValidationError)
