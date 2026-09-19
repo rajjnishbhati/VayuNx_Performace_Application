@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from profiler_service import WIRE_SCHEMA_VERSION, __version__, config
 from profiler_service.comparison import SampleRec, SpanRec, build_report
+from profiler_service.access import Access, access_for, load_run, scope_query
+from profiler_service.access import router as access_router
 from profiler_service.api_v2 import router as v2_router
 from profiler_service.auth import AuthConfig
 from profiler_service.auth import install as install_auth
@@ -41,6 +43,13 @@ def get_session(request: Request):
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+def get_access(request: Request, session: SessionDep) -> Access:
+    return access_for(request, session)
+
+
+AccessDep = Annotated[Access, Depends(get_access)]
+
+
 def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> FastAPI:
     db_url = db_url or config.DB_URL
     auth = auth or AuthConfig.from_env()
@@ -59,6 +68,7 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
                   description="Language-agnostic span/sample ingestion, baseline-vs-remediated comparison and flame-graph reports. "
                               "Sign-in (OIDC) and API tokens when VAYUNX_AUTH=oidc; open otherwise.")
     app.include_router(v2_router)
+    app.include_router(access_router)  # /v2/projects, /v2/teams, /v2/users
     app.include_router(otlp_router)  # OTLP/HTTP: POST /v1/traces, POST /v1/metrics
 
     @app.exception_handler(RequestValidationError)
@@ -81,13 +91,7 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
     def run_out(session: Session, run: Run) -> dict:
         return runs_out(session, [run])[0]
 
-    def load_run(session: Session, run_id: str) -> Run:
-        run = session.get(Run, run_id)
-        if run is None:
-            raise HTTPException(404, f"run {run_id!r} not found")
-        return run
-
-    def check_batch(session: Session, items: list, kind: str) -> None:
+    def check_batch(session: Session, access: Access, items: list, kind: str) -> None:
         if not items:
             raise HTTPException(422, f"empty {kind} batch")
         if len(items) > config.MAX_BATCH_ITEMS:
@@ -95,8 +99,10 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         runs: dict[str, Run] = {}
         for i, item in enumerate(items):
             run = runs.get(item.run_id) or session.get(Run, item.run_id)
-            if run is None:
+            if run is None or not access.can(run.project_id):
                 raise HTTPException(404, {"error": f"run {item.run_id!r} not found", "index": i})
+            if not access.can(run.project_id, "editor"):
+                raise HTTPException(403, {"error": f"you need the editor role on project {run.project_id!r}", "index": i})
             runs[item.run_id] = run
             if run.completed_at is not None:
                 raise HTTPException(409, {"error": f"run {run.run_id!r} is already complete; no further data accepted", "index": i})
@@ -110,20 +116,23 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         return {"status": "ok", "service": "vayunx-profiler-service", "version": __version__, "wire_schema_version": WIRE_SCHEMA_VERSION}
 
     @app.post("/v1/runs", status_code=201)
-    def create_run(body: RunCreate, session: SessionDep) -> RunOut:
+    def create_run(body: RunCreate, session: SessionDep, access: AccessDep) -> RunOut:
+        project_id = access.write_project(body.project, session)
         run_id = body.run_id or uuid.uuid4().hex
         if session.get(Run, run_id) is not None:
             raise HTTPException(409, f"run {run_id!r} already exists")
         run = Run(run_id=run_id, service=body.service, label=body.label, phase=body.phase,
-                  created_at=to_utc_naive(datetime.now(timezone.utc)), metadata_json=json.dumps(body.metadata))
+                  created_at=to_utc_naive(datetime.now(timezone.utc)), metadata_json=json.dumps(body.metadata),
+                  project_id=project_id)
         session.add(run)
         session.commit()
         return run_out(session, run)
 
     @app.get("/v1/runs")
-    def list_runs(session: SessionDep, service: str | None = None, phase: str | None = None,
-                  limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0)) -> list[RunOut]:
-        q = select(Run).order_by(Run.created_at.desc()).limit(limit).offset(offset)
+    def list_runs(session: SessionDep, access: AccessDep, service: str | None = None, phase: str | None = None,
+                  project: str | None = None, limit: int = Query(200, ge=1, le=1000),
+                  offset: int = Query(0, ge=0)) -> list[RunOut]:
+        q = scope_query(select(Run), access, Run, project, session).order_by(Run.created_at.desc()).limit(limit).offset(offset)
         if service:
             q = q.where(Run.service == service)
         if phase:
@@ -131,12 +140,12 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         return runs_out(session, list(session.scalars(q)))
 
     @app.get("/v1/runs/{run_id}")
-    def get_run(run_id: str, session: SessionDep) -> RunOut:
-        return run_out(session, load_run(session, run_id))
+    def get_run(run_id: str, session: SessionDep, access: AccessDep) -> RunOut:
+        return run_out(session, load_run(session, access, run_id))
 
     @app.post("/v1/runs/{run_id}/complete")
-    def complete_run(run_id: str, session: SessionDep, body: RunComplete | None = None) -> RunOut:
-        run = load_run(session, run_id)
+    def complete_run(run_id: str, session: SessionDep, access: AccessDep, body: RunComplete | None = None) -> RunOut:
+        run = load_run(session, access, run_id, "editor")
         if run.completed_at is not None:
             raise HTTPException(409, f"run {run_id!r} is already complete")
         completed = body.completed_at if body and body.completed_at else datetime.now(timezone.utc)
@@ -147,9 +156,9 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
     # ------------------------------------------------------------------ ingestion (single object or array)
 
     @app.post("/v1/spans", status_code=201)
-    def ingest_spans(body: Annotated[SpanIn | list[SpanIn], Body()], session: SessionDep) -> IngestResult:
+    def ingest_spans(body: Annotated[SpanIn | list[SpanIn], Body()], session: SessionDep, access: AccessDep) -> IngestResult:
         items = body if isinstance(body, list) else [body]
-        check_batch(session, items, "span")
+        check_batch(session, access, items, "span")
         seen = set()
         for i, s in enumerate(items):
             if (s.run_id, s.span_id) in seen:
@@ -167,19 +176,20 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         return IngestResult(accepted=len(items))
 
     @app.post("/v1/samples", status_code=201)
-    def ingest_samples(body: Annotated[SampleIn | list[SampleIn], Body()], session: SessionDep) -> IngestResult:
+    def ingest_samples(body: Annotated[SampleIn | list[SampleIn], Body()], session: SessionDep, access: AccessDep) -> IngestResult:
         items = body if isinstance(body, list) else [body]
-        check_batch(session, items, "sample")
+        check_batch(session, access, items, "sample")
         session.add_all(Sample(run_id=s.run_id, service=s.service, category=s.category, metric_name=s.metric_name,
                                value=s.value, unit=s.unit, timestamp=to_utc_naive(s.timestamp)) for s in items)
         session.commit()
         return IngestResult(accepted=len(items))
 
     @app.post("/v1/op-stats", status_code=201)
-    def ingest_op_stats(body: Annotated[OpStatsIn | list[OpStatsIn], Body()], session: SessionDep) -> IngestResult:
+    def ingest_op_stats(body: Annotated[OpStatsIn | list[OpStatsIn], Body()], session: SessionDep,
+                        access: AccessDep) -> IngestResult:
         """Fast-path summaries: one row per operation per interval (latency histogram built in the SDK)."""
         items = body if isinstance(body, list) else [body]
-        check_batch(session, items, "op-stats")
+        check_batch(session, access, items, "op-stats")
         session.add_all(OpStat(run_id=s.run_id, service=s.service, category=s.category, op_name=s.op_name,
                                attributes_json=json.dumps(s.attributes), interval_start=to_utc_naive(s.interval_start),
                                interval_end=to_utc_naive(s.interval_end), count=s.count, sum_ns=s.sum_ns,
@@ -190,8 +200,8 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         return IngestResult(accepted=len(items))
 
     @app.get("/v1/runs/{run_id}/op-stats")
-    def list_op_stats(run_id: str, session: SessionDep) -> list[dict]:
-        load_run(session, run_id)
+    def list_op_stats(run_id: str, session: SessionDep, access: AccessDep) -> list[dict]:
+        load_run(session, access, run_id)
         rows = session.scalars(select(OpStat).where(OpStat.run_id == run_id).order_by(OpStat.interval_start, OpStat.id))
         return [{"op_name": r.op_name, "category": r.category, "attributes": json.loads(r.attributes_json),
                  "interval_start": iso_utc(r.interval_start), "interval_end": iso_utc(r.interval_end),
@@ -201,8 +211,8 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
 
     # ------------------------------------------------------------------ comparison / report
 
-    def comparison_payload(session: Session, baseline_run_id: str, remediated_run_id: str) -> dict:
-        b, r = load_run(session, baseline_run_id), load_run(session, remediated_run_id)
+    def comparison_payload(session: Session, access: Access, baseline_run_id: str, remediated_run_id: str) -> dict:
+        b, r = load_run(session, access, baseline_run_id), load_run(session, access, remediated_run_id)
         if b.run_id == r.run_id:
             raise HTTPException(422, "baseline and remediated run_id are the same run")
         if b.phase != "baseline":
@@ -227,21 +237,22 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         return build_report(meta(b), meta(r), spans(b.run_id), spans(r.run_id), samples(b.run_id), samples(r.run_id))
 
     @app.get("/v1/comparison")
-    def comparison(session: SessionDep, baseline_run_id: str, remediated_run_id: str) -> dict:
+    def comparison(session: SessionDep, access: AccessDep, baseline_run_id: str, remediated_run_id: str) -> dict:
         """Single call: both flame-graph trees, span deltas, sampling deltas, run metadata, summary."""
-        return comparison_payload(session, baseline_run_id, remediated_run_id)
+        return comparison_payload(session, access, baseline_run_id, remediated_run_id)
 
     @app.get("/report", response_class=HTMLResponse)
-    def report(session: SessionDep, baseline_run_id: str, remediated_run_id: str):
+    def report(session: SessionDep, access: AccessDep, baseline_run_id: str, remediated_run_id: str):
         try:
-            return render_report(comparison_payload(session, baseline_run_id, remediated_run_id))
+            return render_report(comparison_payload(session, access, baseline_run_id, remediated_run_id))
         except HTTPException as exc:
             return html_error(exc.status_code, str(exc.detail))
 
     @app.get("/", response_class=HTMLResponse)
-    def index(session: SessionDep, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500)):
-        total = session.scalar(select(func.count()).select_from(Run))
-        runs = list(session.scalars(select(Run).order_by(Run.created_at.desc()).limit(page_size).offset((page - 1) * page_size)))
+    def index(session: SessionDep, access: AccessDep, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500)):
+        visible = scope_query(select(Run), access, Run)
+        total = session.scalar(select(func.count()).select_from(visible.subquery()))
+        runs = list(session.scalars(visible.order_by(Run.created_at.desc()).limit(page_size).offset((page - 1) * page_size)))
         return render_index(runs_out(session, runs), page=page, page_size=page_size, total=total)
 
     def html_error(status: int, cause: str) -> HTMLResponse:

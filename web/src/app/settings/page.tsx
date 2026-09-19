@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ApiTokens from "@/components/ApiTokens";
+import ProjectsAdmin from "@/components/ProjectsAdmin";
 import { api } from "@/lib/api";
 import type { Me } from "@/lib/types";
 import { useStoredNumber, writeStored } from "@/lib/useStored";
@@ -38,6 +39,7 @@ export default function SettingsPage() {
           <span role="status" className="muted">{saved ? "Saved." : ""}</span>
         </div>
       </section>
+      {me && (me.auth === "off" || me.signed_in) && <ProjectsAdmin me={me} />}
       {me?.auth === "oidc" && me.signed_in && <ApiTokens me={me} />}
       <section className="card">
         <h2>Profiler Service</h2>

@@ -37,6 +37,7 @@ class RunCreate(BaseModel):
     label: str = Field(min_length=1, max_length=256)
     phase: Phase
     metadata: dict[str, Any] = Field(default_factory=dict, description="Free-form environment info (sdk, runtime, host, ...)")
+    project: str | None = Field(default=None, max_length=64, description="Project id; default: the token's project, else 'default'")
 
 
 class RunComplete(BaseModel):
@@ -56,6 +57,7 @@ class RunOut(BaseModel):
     span_count: int
     sample_count: int
     op_stat_count: int = 0
+    project_id: str = "default"
 
 
 class SpanIn(BaseModel):

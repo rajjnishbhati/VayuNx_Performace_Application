@@ -96,6 +96,27 @@ Google, Keycloak...). Use redirect URI `<public URL>/auth/callback`, for example
   issuer, expiry, nonce and signature are each refused. The full browser flow through the UI proxy was
   checked in Edge (`web/scripts/auth-check.mjs`). Not yet tried with a real company identity provider.
 
+**Projects, teams and roles (Phase 4).** Every run and experiment belongs to a project. Everything recorded
+before Phase 4 is in **Default project**. The header's Project selector filters lists and decides where new Lab
+experiments go; **Settings → Projects & access** manages them.
+
+- **Roles:** `viewer` (read) < `editor` (run the Lab, send data) < `admin` (manage the project's access).
+- **Who gets which role:** a person's role is the highest of the project's *default role*, which everyone
+  signed in gets (Default project: editor; new projects: none), and the roles granted to their teams.
+  Administrators from `VAYUNX_ADMIN_EMAILS` can do everything, including creating projects and teams.
+- **Out of scope looks like missing:** anything you cannot view answers 404, the same as something that
+  does not exist.
+- **Where new data goes:** a project named in the request (`"project"` in `POST /v1/runs` or `/v2/lab/runs`,
+  or the resource attribute `vayunx.project` over OTLP), else the API token's project, else Default. It needs
+  the editor role there.
+- **Project-bound tokens:** an API token can be bound to one project (`{"name": "ci", "project": "payments"}`),
+  and then reaches only that project.
+- **Sign-in off:** projects still organise data, but everyone can see and change everything.
+
+API: `GET/POST /v2/projects`, `PATCH /v2/projects/{id}` (name, default role),
+`PUT/DELETE /v2/projects/{id}/grants[/{team}]`, `GET/POST /v2/teams`,
+`POST/DELETE /v2/teams/{id}/members[/{user}]`, `GET /v2/users`. List endpoints accept `?project=`.
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -737,11 +758,14 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
     noisy experiment on one machine.
 20. **Phase 3 is verified on Windows only**, like item 11. The Next.js Edge light mode is built and type-checked
     but was not run in an Edge runtime.
-21. **Sign-in, not permissions yet.** In Phase 4 step 2, every signed-in person can see and change everything;
-    administrators differ only in seeing all API tokens. Projects and roles (step 3) add the real boundaries.
-    Also to confirm:
+21. **Sign-in and access to confirm.**
     - which identity provider to register with (OIDC works with Entra ID, Okta, Google and Keycloak; SAML is
       not built)
     - whether 12-hour sessions suit the organisation's policy
     - the new wording: "Sign in required", "admin", "revoked"
+22. **Access model choices to confirm.**
+    - Teams are managed in VAYUNX rather than taken from the identity provider's groups (mapping groups to
+      teams is not built).
+    - The Default project gives every signed-in person the editor role, so existing use keeps working.
+    - New role words (`viewer` / `editor` / `admin`) sit next to VAYUNX's severity and verdict scales.
 

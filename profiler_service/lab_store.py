@@ -33,14 +33,14 @@ class LabStore:
         self.Session = Session
 
     def create_experiment(self, presets: list[str], trials: int, duration_s: float, concurrency: int,
-                          reference: str, label: str, env: dict | None = None) -> str:
+                          reference: str, label: str, env: dict | None = None, project_id: str = "default") -> str:
         exp_id = uuid.uuid4().hex
         with self.Session() as s:
             s.add(Experiment(experiment_id=exp_id, source="lab", label=label, status="queued", created_at=_now(),
                              params_json=json.dumps({"presets": presets, "trials": trials, "duration_s": duration_s,
                                                      "concurrency": concurrency}),
                              reference_preset=reference, progress_done=0, progress_total=trials * len(presets),
-                             current_json="{}", env_json=json.dumps(env) if env else None))
+                             current_json="{}", env_json=json.dumps(env) if env else None, project_id=project_id))
             s.commit()
         return exp_id
 
@@ -73,7 +73,8 @@ class LabStore:
         run_id = uuid.uuid4().hex
         env = result.get("env") or {}
         with self.Session() as s:
-            s.add(Run(run_id=run_id, service=LAB_SERVICE, label=preset.label, phase=phase, created_at=_now(),
+            project_id = s.get(Experiment, exp_id).project_id
+            s.add(Run(run_id=run_id, service=LAB_SERVICE, label=preset.label, phase=phase, created_at=_now(), project_id=project_id,
                       completed_at=_now(), variant=preset.label, experiment_id=exp_id, trial_index=trial_index,
                       source="lab", env_json=json.dumps(env),
                       metadata_json=json.dumps({"preset": preset.id, "params": preset.params, "concurrency": result["concurrency"],

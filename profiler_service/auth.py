@@ -363,7 +363,8 @@ def _person(request: Request) -> Identity | JSONResponse:
 def _token_out(t: ApiToken) -> dict:
     iso = lambda d: None if d is None else d.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")  # noqa: E731
     return {"token_id": t.token_id, "name": t.name, "prefix": t.prefix, "created_at": iso(t.created_at),
-            "last_used_at": iso(t.last_used_at), "revoked": t.revoked_at is not None, "user_id": t.user_id}
+            "last_used_at": iso(t.last_used_at), "revoked": t.revoked_at is not None, "user_id": t.user_id,
+            "project_id": t.project_id}
 
 
 @router.get("/v2/tokens")
@@ -384,17 +385,23 @@ async def create_token(request: Request):
     if isinstance(who, JSONResponse):
         return who
     try:
-        name = str((await request.json()).get("name", "")).strip()[:128]
+        body = await request.json()
+        name = str(body.get("name", "")).strip()[:128]
+        project = body.get("project") or None
     except (ValueError, AttributeError):
-        name = ""
+        name, project = "", None
     if not name:
         return _problem(422, "A token needs a name.", 'Send {"name": "ci"} - the name says what the token is for.')
     raw = TOKEN_PREFIX + secrets.token_urlsafe(32)
 
     def save():
+        from profiler_service.access import access_for
+        from profiler_service.models import Project
         with request.app.state.sessionmaker() as s:
+            if project is not None and (s.get(Project, str(project)) is None or not access_for(request, s).can(str(project))):
+                return _problem(404, f"No such project: {project!r}.", "Pick a project from GET /v2/projects.")
             t = ApiToken(token_id=uuid.uuid4().hex, token_hash=sha256(raw), prefix=raw[:8], name=name,
-                         user_id=who.user_id, created_at=_now())
+                         user_id=who.user_id, created_at=_now(), project_id=project)
             s.add(t)
             s.commit()
             return {**_token_out(t), "token": raw, "note": "Copy it now: it is not shown again."}

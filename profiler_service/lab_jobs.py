@@ -48,12 +48,13 @@ class LabJobs:
             return None
 
     def start(self, presets: list[str], *, trials: int, duration_s: float, concurrency: int,
-              reference: str | None, warmup_s: float = 1.0) -> str:
+              reference: str | None, warmup_s: float = 1.0, project_id: str = "default") -> str:
         with self._lock:
             if self._current and self._current[2].is_alive():
                 raise Busy(self._current[0])
             runner = ExperimentRunner(self.store, presets, trials=trials, duration_s=duration_s, concurrency=concurrency,
-                                      reference=reference, warmup_s=warmup_s, python=self.python)  # validates
+                                      reference=reference, warmup_s=warmup_s, python=self.python,
+                                      project_id=project_id)  # validates
             exp_id = runner.create()
             thread = threading.Thread(target=runner.run, args=(exp_id,), name=f"lab-{exp_id[:8]}", daemon=True)
             self._current = (exp_id, runner, thread)

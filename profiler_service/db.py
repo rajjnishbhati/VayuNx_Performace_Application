@@ -9,7 +9,6 @@ from profiler_service.models import Base
 
 
 MIGRATIONS = Path(__file__).resolve().parent / "migrations"
-BASELINE = "0001"  # the schema every database had before Alembic (Phases 0-3)
 
 
 def make_engine(db_url: str) -> Engine:
@@ -39,13 +38,28 @@ def migrate(engine: Engine) -> str:
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS))
     tables = set(inspect(engine).get_table_names())
+    if "runs" in tables and "alembic_version" not in tables:
+        # pre-Alembic file (Phases 0-3): give it the full current schema - missing tables and columns - keep
+        # every row, add the rows migrations would have seeded, and record it as up to date
+        Base.metadata.create_all(engine)
+        add_missing_columns(engine)
+        seed_defaults(engine)
+        with engine.begin() as conn:
+            cfg.attributes["connection"] = conn
+            command.stamp(cfg, "head")
     with engine.begin() as conn:
         cfg.attributes["connection"] = conn
-        if "runs" in tables and "alembic_version" not in tables:
-            add_missing_columns(engine)
-            command.stamp(cfg, BASELINE)
         command.upgrade(cfg, "head")
         return MigrationContext.configure(conn).get_current_revision()
+
+
+def seed_defaults(engine: Engine) -> None:
+    """Rows the migrations create (keep in step with them): the Default project (revision 0003)."""
+    from profiler_service.models import DEFAULT_PROJECT_ID, Project
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT 1 FROM projects WHERE project_id = :p"), {"p": DEFAULT_PROJECT_ID}).first() is None:
+            conn.execute(Project.__table__.insert().values(project_id=DEFAULT_PROJECT_ID, name="Default project",
+                                                           default_role="editor", created_at=to_utc_naive(datetime.now(timezone.utc))))
 
 
 def add_missing_columns(engine: Engine) -> list[str]:

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from profiler_service.access import Access, access_for, load_experiment, load_run, scope_query
 from profiler_service.compare_v2 import TrialInput, compare
 from profiler_service.db import iso_utc
 from profiler_service.lab_jobs import Busy
@@ -40,6 +41,13 @@ def get_session(request: Request):
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def get_access(request: Request, session: SessionDep) -> Access:
+    return access_for(request, session)
+
+
+AccessDep = Annotated[Access, Depends(get_access)]
 
 
 def problem(status: int, error: str, fix: str) -> HTTPException:
@@ -77,10 +85,12 @@ class LabRunIn(BaseModel):
     duration_s: float = Field(default=10.0, ge=0.2, le=60.0)
     concurrency: int = 1
     warmup_s: float = Field(default=1.0, ge=0.0, le=5.0)
+    project: str | None = Field(default=None, max_length=64, description="project to store the experiment in (default: Default)")
 
 
 @router.post("/lab/runs", status_code=202)
-def start_lab_run(body: LabRunIn, request: Request) -> dict:
+def start_lab_run(body: LabRunIn, request: Request, session: SessionDep, access: AccessDep) -> dict:
+    project_id = access.write_project(body.project, session)
     if len(set(body.presets)) < 2:
         raise problem(422, "Pick at least two different algorithms to compare.",
                       "Choose two or more presets from GET /v2/presets.")
@@ -99,7 +109,7 @@ def start_lab_run(body: LabRunIn, request: Request) -> dict:
     try:
         exp_id = request.app.state.lab_jobs.start(body.presets, trials=body.trials, duration_s=body.duration_s,
                                                   concurrency=body.concurrency, reference=body.reference,
-                                                  warmup_s=body.warmup_s)
+                                                  warmup_s=body.warmup_s, project_id=project_id)
     except Busy as exc:
         raise problem(409, f"A Lab experiment is already running ({exc.experiment_id}).",
                       f"Wait for it to finish, or cancel it with POST /v2/experiments/{exc.experiment_id}/cancel.") from None
@@ -109,13 +119,6 @@ def start_lab_run(body: LabRunIn, request: Request) -> dict:
 
 
 # ----------------------------------------------------------------------------- experiments
-
-
-def _load_experiment(session: Session, exp_id: str) -> Experiment:
-    exp = session.get(Experiment, exp_id)
-    if exp is None:
-        raise problem(404, f"No experiment with id {exp_id!r}.", "Pick an experiment from GET /v2/experiments.")
-    return exp
 
 
 def experiment_out(exp: Experiment) -> dict:
@@ -133,13 +136,15 @@ def experiment_out(exp: Experiment) -> dict:
             "completed_at": iso_utc(exp.completed_at), "params": params, "reference_preset": exp.reference_preset,
             "progress": {"done": done, "total": total, "percent": round(100 * done / total) if total else 0,
                          "current": json.loads(exp.current_json or "{}"), "eta_s": eta},
-            "error": exp.error, "env": json.loads(exp.env_json) if exp.env_json else None}
+            "error": exp.error, "env": json.loads(exp.env_json) if exp.env_json else None,
+            "project_id": exp.project_id}
 
 
 @router.get("/experiments")
-def list_experiments(session: SessionDep, q: str | None = None, source: str | None = None, status: str | None = None,
+def list_experiments(session: SessionDep, access: AccessDep, q: str | None = None, source: str | None = None,
+                     status: str | None = None, project: str | None = None,
                      limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)) -> dict:
-    query = select(Experiment)
+    query = scope_query(select(Experiment), access, Experiment, project, session)
     if q:
         query = query.where(Experiment.label.ilike(f"%{q}%"))
     if source:
@@ -152,13 +157,13 @@ def list_experiments(session: SessionDep, q: str | None = None, source: str | No
 
 
 @router.get("/experiments/{exp_id}")
-def get_experiment(exp_id: str, session: SessionDep) -> dict:
-    return experiment_out(_load_experiment(session, exp_id))
+def get_experiment(exp_id: str, session: SessionDep, access: AccessDep) -> dict:
+    return experiment_out(load_experiment(session, access, exp_id))
 
 
 @router.post("/experiments/{exp_id}/cancel", status_code=202)
-def cancel_experiment(exp_id: str, session: SessionDep, request: Request) -> dict:
-    exp = _load_experiment(session, exp_id)
+def cancel_experiment(exp_id: str, session: SessionDep, request: Request, access: AccessDep) -> dict:
+    exp = load_experiment(session, access, exp_id, "editor")
     if exp.status not in ("queued", "running"):
         raise problem(409, f"The experiment is already {exp.status}.", "Only queued or running experiments can be cancelled.")
     if not request.app.state.lab_jobs.cancel(exp_id):
@@ -168,9 +173,9 @@ def cancel_experiment(exp_id: str, session: SessionDep, request: Request) -> dic
 
 
 @router.get("/experiments/{exp_id}/timeseries")
-def experiment_timeseries(exp_id: str, session: SessionDep) -> dict:
+def experiment_timeseries(exp_id: str, session: SessionDep, access: AccessDep) -> dict:
     """Machine view data: one series per metric on a shared time axis, plus regions where crypto ran."""
-    _load_experiment(session, exp_id)
+    load_experiment(session, access, exp_id)
     runs = session.scalars(select(Run).where(Run.experiment_id == exp_id).order_by(Run.created_at)).all()
     trials = {t.run_id: t for t in session.scalars(select(TrialResult).where(TrialResult.experiment_id == exp_id))}
     samples = session.scalars(select(Sample).where(Sample.run_id.in_([r.run_id for r in runs]),
@@ -317,14 +322,14 @@ def _app_trials(session: Session, runs: list[Run]) -> tuple[list[TrialInput], di
 
 
 @router.get("/compare")
-def compare_v2(session: SessionDep, experiment_id: str | None = None, run_ids: str | None = None,
+def compare_v2(session: SessionDep, access: AccessDep, experiment_id: str | None = None, run_ids: str | None = None,
                reference: str | None = None, rate: float = Query(100.0, gt=0, le=1e7),
                cores: int | None = Query(None, ge=1, le=4096)) -> dict:
     if not experiment_id and not run_ids:
         raise problem(422, "Nothing to compare.",
                       "Pass experiment_id=<id> for a Lab experiment, or run_ids=<id>,<id> for app runs.")
     if experiment_id:
-        exp = _load_experiment(session, experiment_id)
+        exp = load_experiment(session, access, experiment_id)
         trials = _lab_trials(session, experiment_id)
         if len({t.variant_key for t in trials}) < 2:
             raise problem(409, "This experiment does not have finished trials for two algorithms yet.",
@@ -341,6 +346,7 @@ def compare_v2(session: SessionDep, experiment_id: str | None = None, run_ids: s
 
     ids = [r for r in run_ids.split(",") if r]
     runs = [session.get(Run, r) for r in ids]
+    runs = [r if r is not None and access.can(r.project_id) else None for r in runs]  # out of scope = unknown
     missing = [rid for rid, run in zip(ids, runs) if run is None]
     if missing:
         raise problem(404, f"Unknown run id(s): {', '.join(missing)}.", "Pick runs from GET /v2/runs.")
@@ -358,16 +364,9 @@ def compare_v2(session: SessionDep, experiment_id: str | None = None, run_ids: s
 # ----------------------------------------------------------------------------- run detail
 
 
-def _load_run(session: Session, run_id: str) -> Run:
-    run = session.get(Run, run_id)
-    if run is None:
-        raise problem(404, f"No run with id {run_id!r}.", "Pick a run from GET /v2/runs.")
-    return run
-
-
 @router.get("/runs/{run_id}/spans")
-def run_spans(run_id: str, session: SessionDep, limit: int = Query(5000, ge=1, le=50000)) -> list[dict]:
-    _load_run(session, run_id)
+def run_spans(run_id: str, session: SessionDep, access: AccessDep, limit: int = Query(5000, ge=1, le=50000)) -> list[dict]:
+    load_run(session, access, run_id)
     rows = session.scalars(select(Span).where(Span.run_id == run_id).order_by(Span.start_time).limit(limit))
     return [{"span_id": s.span_id, "parent_span_id": s.parent_span_id, "span_name": s.span_name, "category": s.category,
              "start_time": iso_utc(s.start_time), "end_time": iso_utc(s.end_time), "duration_ms": s.duration_ms,
@@ -375,9 +374,9 @@ def run_spans(run_id: str, session: SessionDep, limit: int = Query(5000, ge=1, l
 
 
 @router.get("/runs/{run_id}/samples")
-def run_samples(run_id: str, session: SessionDep, metric: str | None = None,
+def run_samples(run_id: str, session: SessionDep, access: AccessDep, metric: str | None = None,
                 limit: int = Query(20000, ge=1, le=200000)) -> list[dict]:
-    _load_run(session, run_id)
+    load_run(session, access, run_id)
     q = select(Sample).where(Sample.run_id == run_id)
     if metric:
         q = q.where(Sample.metric_name == metric)
@@ -389,10 +388,11 @@ def run_samples(run_id: str, session: SessionDep, metric: str | None = None,
 
 
 @router.get("/runs")
-def search_runs(session: SessionDep, q: str | None = None, service: str | None = None, algorithm: str | None = None,
-                source: str | None = None, date_from: datetime | None = None, date_to: datetime | None = None,
+def search_runs(session: SessionDep, access: AccessDep, q: str | None = None, service: str | None = None,
+                algorithm: str | None = None, source: str | None = None, date_from: datetime | None = None,
+                date_to: datetime | None = None, project: str | None = None,
                 limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)) -> dict:
-    query = select(Run)
+    query = scope_query(select(Run), access, Run, project, session)
     if q:
         like = f"%{q}%"
         query = query.where(or_(Run.label.ilike(like), Run.variant.ilike(like), Run.service.ilike(like)))

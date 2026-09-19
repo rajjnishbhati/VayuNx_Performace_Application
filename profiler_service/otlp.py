@@ -20,7 +20,7 @@ import math
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from google.protobuf import json_format
 from google.protobuf.message import DecodeError
@@ -31,6 +31,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from profiler_service.access import access_for
 from profiler_service.config import MAX_ATTRIBUTES
 from profiler_service.db import to_utc_naive
 from profiler_service.models import OpStat, Run, Sample, Span
@@ -136,7 +137,16 @@ def _clean(attrs: dict) -> dict:
     return dict(list(clean.items())[:MAX_ATTRIBUTES])
 
 
-def _resolve_run(session: Session, res: dict) -> Run:
+def _project(access, res: dict, session: Session) -> str:
+    """The project for a new run: resource attribute vayunx.project, else the token's, else Default."""
+    requested = res.get("vayunx.project")
+    try:
+        return access.write_project(str(requested)[:64] if requested else None, session)
+    except HTTPException as exc:
+        raise BadRequest(exc.detail["error"] if isinstance(exc.detail, dict) else str(exc.detail)) from None
+
+
+def _resolve_run(session: Session, res: dict, access) -> Run:
     service = str(res.get("service.name") or "unknown_service")[:128]
     variant = res.get("vayunx.variant")
     variant = str(variant)[:256] if variant else None
@@ -146,6 +156,8 @@ def _resolve_run(session: Session, res: dict) -> Run:
         rid = hashlib.sha1(seed.encode()).hexdigest()[:32]
     run = session.get(Run, rid)
     if run is not None:
+        if not access.can(run.project_id, "editor"):
+            raise BadRequest(f"run {rid!r} is not writable with these credentials")
         if run.service != service:
             raise BadRequest(f"run {rid!r} belongs to service {run.service!r}, not {service!r}")
         return run
@@ -153,7 +165,7 @@ def _resolve_run(session: Session, res: dict) -> Run:
     meta = _clean({k: v for k, v in res.items() if not k.startswith("vayunx.run_id")})
     run = Run(run_id=rid, service=service, label=variant or service, phase=phase,
               created_at=to_utc_naive(datetime.now(timezone.utc)), metadata_json=json.dumps(meta),
-              variant=variant, source="app")
+              variant=variant, source="app", project_id=_project(access, res, session))
     session.add(run)
     session.flush()
     return run
@@ -170,11 +182,12 @@ async def otlp_traces(request: Request):
         return _bad(exc)
     rejected, errors = 0, []
     with request.app.state.sessionmaker() as session:
+        access = access_for(request, session)
         for rs in req.resource_spans:
             res = _attrs(rs.resource.attributes)
             spans = [sp for ss in rs.scope_spans for sp in ss.spans]
             try:
-                run = _resolve_run(session, res)
+                run = _resolve_run(session, res, access)
             except BadRequest as exc:
                 rejected += len(spans)
                 errors.append(str(exc))
@@ -268,10 +281,11 @@ async def otlp_metrics(request: Request):
         return _bad(exc)
     rejected, errors = 0, []
     with request.app.state.sessionmaker() as session:
+        access = access_for(request, session)
         for rm in req.resource_metrics:
             res = _attrs(rm.resource.attributes)
             try:
-                run = _resolve_run(session, res)
+                run = _resolve_run(session, res, access)
             except BadRequest as exc:
                 rejected += sum(1 for sm in rm.scope_metrics for _ in sm.metrics)
                 errors.append(str(exc))

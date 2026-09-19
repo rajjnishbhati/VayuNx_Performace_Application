@@ -17,7 +17,7 @@ import sys
 from sqlalchemy import create_engine, func, inspect, select, text
 
 from profiler_service.db import make_engine
-from profiler_service.models import Base
+from profiler_service.models import DEFAULT_PROJECT_ID, Base, Project
 
 BATCH = 5000
 
@@ -35,7 +35,11 @@ def copy_database(source_url: str, target_url: str, log=lambda msg: None) -> dic
     if "runs" not in src_tables:
         raise CopyError(f"the source has no Profiler tables: {source_url}")
     with dst.connect() as conn:
-        busy = [t.name for t in Base.metadata.sorted_tables if conn.scalar(select(func.count()).select_from(t))]
+        seeded = set(conn.scalars(select(Project.project_id)))  # rows the migrations create (the Default project)
+        busy = [t.name for t in Base.metadata.sorted_tables if t.name != "projects"
+                and conn.scalar(select(func.count()).select_from(t))]
+        if seeded - {DEFAULT_PROJECT_ID}:
+            busy.append("projects")
     if busy:
         raise CopyError(f"the target is not empty (rows in {', '.join(busy)}); copy into a new, empty database")
 
@@ -51,7 +55,12 @@ def copy_database(source_url: str, target_url: str, log=lambda msg: None) -> dic
             # selected through the model's columns, so values are converted by type (e.g. SQLite text -> datetime)
             result = s.execution_options(stream_results=True).execute(select(*cols))
             while batch := result.fetchmany(BATCH):
-                d.execute(table.insert(), [dict(zip((c.name for c in cols), r)) for r in batch])
+                rows_in = [dict(zip((c.name for c in cols), r)) for r in batch]
+                if table.name == "projects":  # the source's copy of a seeded project replaces the seed
+                    for row in rows_in:
+                        if row["project_id"] in seeded:
+                            d.execute(table.delete().where(table.c.project_id == row["project_id"]))
+                d.execute(table.insert(), rows_in)
                 n += len(batch)
             rows[table.name] = n
             log(f"{table.name}: {n} rows")
@@ -67,6 +76,8 @@ def copy_database(source_url: str, target_url: str, log=lambda msg: None) -> dic
                 continue
             a = s.scalar(select(func.count()).select_from(text(f'"{table.name}"')))
             b = d.scalar(select(func.count()).select_from(table))
+            if table.name == "projects":
+                a = len(set(s.scalars(select(text("project_id")).select_from(text('"projects"')))) | seeded)
             if a != b:
                 raise CopyError(f"row count mismatch in {table.name}: source {a}, target {b}")
     src.dispose()

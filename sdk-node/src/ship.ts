@@ -52,7 +52,10 @@ export class OpHistograms {
   }
 }
 
-export function post(url: string, body: string, timeoutMs: number, extraHeaders: Record<string, string> = {}): Promise<"ok" | "rejected" | "failed"> {
+/** `holdProcess`: false for periodic exports (never keep the app alive); true for the final flush at exit, which
+ *  must finish (or time out) before the process ends - otherwise the last interval of data is lost. */
+export function post(url: string, body: string, timeoutMs: number, extraHeaders: Record<string, string> = {},
+                     holdProcess = false): Promise<"ok" | "rejected" | "failed"> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (r: "ok" | "rejected" | "failed") => { if (!settled) { settled = true; resolve(r); } };
@@ -70,7 +73,7 @@ export function post(url: string, body: string, timeoutMs: number, extraHeaders:
       });
       req.setTimeout(timeoutMs, () => req.destroy(new Error("timeout")));
       req.on("error", () => done("failed"));
-      req.on("socket", (s) => s.unref());
+      if (!holdProcess) req.on("socket", (s) => s.unref());
       req.end(body);
     } catch {
       done("failed");
@@ -92,13 +95,13 @@ export class Shipper {
     this.timer.unref();
   }
 
-  tick(deadline: number): Promise<boolean> {
-    if (this.busy) return this.busy.then(() => this.tick(deadline));
-    this.busy = this.run(deadline).finally(() => { this.busy = undefined; });
+  tick(deadline: number, holdProcess = false): Promise<boolean> {
+    if (this.busy) return this.busy.then(() => this.tick(deadline, holdProcess));
+    this.busy = this.run(deadline, holdProcess).finally(() => { this.busy = undefined; });
     return this.busy;
   }
 
-  private async run(deadline: number): Promise<boolean> {
+  private async run(deadline: number, holdProcess: boolean): Promise<boolean> {
     try {
       const { startMs, endMs, series } = this.ophists.drain();
       if (series.length) {
@@ -109,7 +112,7 @@ export class Shipper {
         }
       }
       while (this.pending.length && Date.now() < deadline) {
-        const r = await post(this.url, this.pending[0], Math.max(100, deadline - Date.now()), this.headers);
+        const r = await post(this.url, this.pending[0], Math.max(100, deadline - Date.now()), this.headers, holdProcess);
         if (r === "failed") {
           this.counters.offline_attempts = (this.counters.offline_attempts ?? 0) + 1;
           return false;
@@ -127,6 +130,6 @@ export class Shipper {
 
   async stop(timeoutMs: number): Promise<boolean> {
     if (this.timer) clearInterval(this.timer);
-    return this.tick(Date.now() + timeoutMs);
+    return this.tick(Date.now() + timeoutMs, true);
   }
 }

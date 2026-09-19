@@ -119,7 +119,7 @@ class ExperimentRunner:
                  reference: str | None = None, warmup_s: float = 1.0, sample_interval_s: float = 0.1,
                  quiet_threshold_pct: float = 25.0, quiet_max_wait_s: float = 5.0, python: str = sys.executable,
                  cancel_event: threading.Event | None = None, on_trial_done: Callable[[int, int], None] | None = None,
-                 log: Callable[[str], None] | None = None, label: str | None = None):
+                 log: Callable[[str], None] | None = None, label: str | None = None, project_id: str = "default"):
         if len(preset_ids) < 1 or len(set(preset_ids)) != len(preset_ids):
             raise ValueError("choose one or more distinct presets")
         self.presets = [get_preset(p) for p in preset_ids]  # validates against the allow-list
@@ -141,10 +141,11 @@ class ExperimentRunner:
         self.on_trial_done, self.log = on_trial_done, log or (lambda msg: None)
         self.label = label or " vs ".join(p.label for p in self.presets)
         self.store = store
+        self.project_id = project_id
 
     def create(self) -> str:
         return self.store.create_experiment(self.preset_ids, self.trials, self.duration_s, self.concurrency,
-                                            self.reference, self.label, env=fingerprint())
+                                            self.reference, self.label, env=fingerprint(), project_id=self.project_id)
 
     def run(self, exp_id: str) -> str:
         plan = schedule(self.preset_ids, self.trials)

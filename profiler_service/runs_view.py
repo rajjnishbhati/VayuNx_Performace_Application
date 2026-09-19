@@ -27,7 +27,8 @@ def runs_out(session: Session, runs: list[Run]) -> list[dict]:
     counts = counts_for(session, [r.run_id for r in runs])
     return [RunOut(run_id=r.run_id, service=r.service, label=r.label, phase=r.phase,
                    created_at=iso_utc(r.created_at), completed_at=iso_utc(r.completed_at),
-                   metadata=json.loads(r.metadata_json), **counts[r.run_id]).model_dump() for r in runs]
+                   metadata=json.loads(r.metadata_json), project_id=r.project_id or "default",
+                   **counts[r.run_id]).model_dump() for r in runs]
 
 
 def runs_out_v2(session: Session, runs: list[Run]) -> list[dict]:

@@ -33,6 +33,7 @@ class Run(Base):
     trial_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(8), default="app", server_default="app")  # "lab" | "app"
     env_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # environment fingerprint
+    project_id: Mapped[str] = mapped_column(String(64), default="default", server_default="default", index=True)
 
 
 class Experiment(Base):
@@ -54,6 +55,7 @@ class Experiment(Base):
     current_json: Mapped[str] = mapped_column(Text, default="{}")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     env_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_id: Mapped[str] = mapped_column(String(64), default="default", server_default="default", index=True)
 
 
 class TrialResult(Base):
@@ -187,3 +189,46 @@ class ApiToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # None = any project the user can use
+
+
+# ----------------------------------------------------------------------------- Phase 4: projects, teams, roles
+
+ROLES = ("viewer", "editor", "admin")  # each includes the ones before it
+DEFAULT_PROJECT_ID = "default"
+
+
+class Project(Base):
+    """Holds runs and experiments. `default_role` is what every signed-in person gets without a team grant."""
+
+    __tablename__ = "projects"
+
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True)  # also the URL slug
+    name: Mapped[str] = mapped_column(String(128))
+    default_role: Mapped[str | None] = mapped_column(String(16), nullable=True)  # None | viewer | editor
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    team_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.team_id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), primary_key=True)
+
+
+class ProjectGrant(Base):
+    """A team's role on a project."""
+
+    __tablename__ = "project_grants"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), primary_key=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.team_id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16))

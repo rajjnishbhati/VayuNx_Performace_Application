@@ -140,6 +140,7 @@ export type RunItem = {
   experiment_id: string | null;
   trial_index: number | null;
   source: "lab" | "app";
+  project_id?: string;
 };
 
 export type CompareResult = {
@@ -177,5 +178,14 @@ export type Me = {
 };
 
 export type ApiTokenItem = {
-  token_id: string; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked: boolean; user_id: string;
+  token_id: string; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked: boolean; user_id: string; project_id?: string | null;
 };
+
+export type Role = "viewer" | "editor" | "admin";
+
+export type ProjectItem = {
+  project_id: string; name: string; default_role: "viewer" | "editor" | null; my_role: Role | null;
+  grants?: { team_id: string; team: string; role: Role }[];
+};
+
+export type TeamItem = { team_id: string; name: string; members: { user_id: string; email: string | null; name: string | null }[] };

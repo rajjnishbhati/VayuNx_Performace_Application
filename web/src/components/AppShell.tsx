@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import type { Me } from "@/lib/types";
+import { PROJECT_KEY, api } from "@/lib/api";
+import type { Me, ProjectItem } from "@/lib/types";
 import { useStoredString, writeStored } from "@/lib/useStored";
 
 const NAV = [
@@ -29,6 +29,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [machine, setMachine] = useState<string>("This machine");
   const [me, setMe] = useState<Me | null>(null);
   useEffect(() => { api.me().then(setMe).catch(() => undefined); }, []);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const project = useStoredString(PROJECT_KEY, "");
+  useEffect(() => {
+    api.projects().then((ps) => {
+      setProjects(ps);
+      // a remembered project that is gone or no longer visible falls back to "all projects"
+      if (project && !ps.some((p) => p.project_id === project)) { writeStored(PROJECT_KEY, ""); window.location.reload(); }
+    }).catch(() => undefined);
+  }, [project]);
+  const chooseProject = (id: string) => {
+    writeStored(PROJECT_KEY, id);
+    window.location.reload(); // every list and comparison on the page follows the new project
+  };
 
   useEffect(() => {
     // The machine selector shows where Lab numbers come from (the Service's host). Multi-machine comes with Phase 4.
@@ -45,8 +58,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <span className="brand">VAYUNX Crypto Profiler</span>
         <label>
           Project
-          <select aria-label="Project" defaultValue="default">
-            <option value="default">Default project</option>
+          <select aria-label="Project" value={project} onChange={(e) => chooseProject(e.target.value)}>
+            <option value="">All projects</option>
+            {projects.map((p) => <option key={p.project_id} value={p.project_id}>{p.name}{p.my_role && me?.auth === "oidc" ? ` (${p.my_role})` : ""}</option>)}
           </select>
         </label>
         <label>
