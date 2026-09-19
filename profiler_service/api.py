@@ -18,9 +18,12 @@ from sqlalchemy.orm import Session
 
 from profiler_service import WIRE_SCHEMA_VERSION, __version__, config
 from profiler_service.comparison import SampleRec, SpanRec, build_report
+from profiler_service.api_v2 import router as v2_router
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
+from profiler_service.lab_jobs import LabJobs
 from profiler_service.models import OpStat, Run, Sample, Span
 from profiler_service.report_html import render_error, render_index, render_report
+from profiler_service.runs_view import runs_out
 from profiler_service.schemas import IngestResult, OpStatsIn, RunComplete, RunCreate, RunOut, SampleIn, SpanIn
 
 
@@ -42,12 +45,16 @@ def create_app(db_url: str | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.engine = make_engine(db_url)
         app.state.sessionmaker = make_sessionmaker(app.state.engine)
+        app.state.lab_jobs = LabJobs(app.state.sessionmaker)
+        app.state.lab_jobs.recover()  # experiments left "running" by a previous process are marked failed
         yield
+        app.state.lab_jobs.cancel_current()
         app.state.engine.dispose()
 
     app = FastAPI(title="VAYUNX Profiler Service", version=__version__, lifespan=lifespan,
                   description="Language-agnostic span/sample ingestion, baseline-vs-remediated comparison and flame-graph reports. "
                               "Demo build - no auth.")
+    app.include_router(v2_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
@@ -65,23 +72,6 @@ def create_app(db_url: str | None = None) -> FastAPI:
                 return [safe(x) for x in v]
             return v
         return JSONResponse(status_code=422, content={"detail": safe(jsonable_encoder(exc.errors()))})
-
-    def counts_for(session: Session, run_ids: list[str]) -> dict[str, dict[str, int]]:
-        """Span/sample/op-stat counts for many runs: one grouped query per table, not one per run (no N+1)."""
-        out = {rid: {"span_count": 0, "sample_count": 0, "op_stat_count": 0} for rid in run_ids}
-        if not run_ids:
-            return out
-        for model, key in ((Span, "span_count"), (Sample, "sample_count"), (OpStat, "op_stat_count")):
-            q = select(model.run_id, func.count()).where(model.run_id.in_(run_ids)).group_by(model.run_id)
-            for rid, n in session.execute(q):
-                out[rid][key] = n
-        return out
-
-    def runs_out(session: Session, runs: list[Run]) -> list[dict]:
-        counts = counts_for(session, [r.run_id for r in runs])
-        return [RunOut(run_id=r.run_id, service=r.service, label=r.label, phase=r.phase,
-                       created_at=iso_utc(r.created_at), completed_at=iso_utc(r.completed_at),
-                       metadata=json.loads(r.metadata_json), **counts[r.run_id]).model_dump() for r in runs]
 
     def run_out(session: Session, run: Run) -> dict:
         return runs_out(session, [run])[0]

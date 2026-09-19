@@ -32,6 +32,27 @@ _NOTES = {
 }
 
 
+_FAST = ("md5", "sha1", "sha-1", "sha256", "sha-256", "sha512", "sha-512")
+_SLOW = {"argon2id": "Argon2id", "argon2": "Argon2", "bcrypt": "bcrypt", "scrypt": "scrypt", "pbkdf2": "PBKDF2"}
+
+
+def note_for_algorithm(algorithm: str | None, params: str | None = None) -> dict | None:
+    """Best-effort note for app data, where only an algorithm name (and maybe params) is known.
+    Parameters are NOT checked against the OWASP minimums here; the note says so."""
+    if not algorithm:
+        return None
+    name = algorithm.strip().lower().replace("_", "-")
+    if any(name == f or name.startswith(f + " ") for f in _FAST):
+        return {"algorithm": algorithm, "params": params or "", "safe_for_passwords": False, "meets_owasp_minimum": False,
+                "summary": "Fast hash: not suitable for password storage.", "reference": REFERENCE}
+    for key, label in _SLOW.items():
+        if name.startswith(key):
+            return {"algorithm": label, "params": params or "", "safe_for_passwords": True, "meets_owasp_minimum": None,
+                    "summary": f"{label} is a password hash. Its parameters were not checked against the OWASP "
+                               "minimums for this app data.", "reference": REFERENCE}
+    return None
+
+
 def security_note(preset: Preset) -> dict:
     safe, meets_minimum, summary = _NOTES[preset.id]
     return {"algorithm": preset.algorithm, "params": preset.params, "safe_for_passwords": safe,
