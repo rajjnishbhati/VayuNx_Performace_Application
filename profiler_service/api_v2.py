@@ -19,6 +19,7 @@ from profiler_service.db import iso_utc
 from profiler_service.lab_jobs import Busy
 from profiler_service.models import Experiment, OpStat, Run, Sample, Span, TrialResult
 from profiler_service.runs_view import runs_out_v2
+from vayunx_lab.node_runtime import node_info
 from vayunx_lab.presets import PRESETS, PresetError, get_preset
 from vayunx_lab.security import note_for_algorithm, security_note
 from vayunx_lab.worker import ALLOWED_CONCURRENCY
@@ -50,7 +51,18 @@ def problem(status: int, error: str, fix: str) -> HTTPException:
 
 @router.get("/presets")
 def list_presets() -> list[dict]:
-    return [{**p.public(), "security": security_note(p)} for p in PRESETS.values()]
+    """The built-in presets (Python). Each says whether its Node.js twin (`<id>@node`) can run here - as reported
+    by the Node.js worker itself - so a Lab experiment can compare the same algorithm across runtimes."""
+    node = node_info()
+    out = []
+    for p in PRESETS.values():
+        twin = get_preset(f"{p.id}@node")
+        avail = node["presets"].get(p.id, {})
+        out.append({**p.public(), "security": security_note(p), "node": {
+            "id": twin.id, "label": twin.label, "available": bool(avail.get("available")),
+            "library": avail.get("library"),
+            "reason": None if avail.get("available") else (avail.get("reason") or node.get("reason"))}})
+    return out
 
 
 # ----------------------------------------------------------------------------- lab runs
@@ -76,7 +88,8 @@ def start_lab_run(body: LabRunIn, request: Request) -> dict:
         try:
             get_preset(p)
         except PresetError:
-            raise problem(422, f"unknown preset {p!r}.", f"Use one of: {', '.join(PRESETS)}.") from None
+            raise problem(422, f"unknown preset {p!r}.",
+                          f"Use one of: {', '.join(PRESETS)}; add @node (e.g. md5@node) to run it in Node.js.") from None
     if body.reference is not None and body.reference not in body.presets:
         raise problem(422, "The reference must be one of the chosen presets.",
                       "Set reference to one of the presets you picked, or leave it out to use the first.")

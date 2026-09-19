@@ -14,18 +14,22 @@ export default function AlgorithmsPage() {
   return (
     <div className="page">
       <h1>Algorithms</h1>
-      <p className="muted">Built-in Lab presets. The Lab can only run these, with these parameters.</p>
+      <p className="muted">Built-in Lab presets. The Lab can only run these, with these parameters - in Python, or in Node.js
+        (<code>&lt;id&gt;@node</code>) when this machine&apos;s Node.js can run them.</p>
       {error ? <ErrorState error={error.message} fix={error.fix} onRetry={() => { setError(null); load(); }} /> : (
         <section className="card">
           <div className="scroll-x">
             <table className="data">
-              <thead><tr><th scope="col">Preset</th><th scope="col">Parameters</th><th scope="col">Library</th><th scope="col">Passwords</th><th scope="col">Security note</th></tr></thead>
+              <thead><tr><th scope="col">Preset</th><th scope="col">Parameters</th><th scope="col">Library (Python)</th><th scope="col">Node.js</th><th scope="col">Passwords</th><th scope="col">Security note</th></tr></thead>
               <tbody>
                 {presets?.map((p) => (
                   <tr key={p.id}>
                     <th scope="row" style={{ fontWeight: 500 }}>{p.label}<div className="muted mono">{p.id}</div></th>
                     <td className="mono">{p.params || "–"}</td>
                     <td className="muted" style={{ fontSize: 13 }}>{p.library}</td>
+                    <td className="muted" style={{ fontSize: 13 }}>
+                      {p.node?.available ? <>{p.node.library}<div className="mono">{p.node.id}</div></> : <>not available{p.node?.reason ? `: ${p.node.reason}` : ""}</>}
+                    </td>
                     <td><SecurityBadge security={p.security} /></td>
                     <td style={{ fontSize: 13 }}>{p.security.summary}</td>
                   </tr>

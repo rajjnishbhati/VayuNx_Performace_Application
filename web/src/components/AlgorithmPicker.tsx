@@ -10,9 +10,11 @@ export const QUICK_PICKS: { label: string; presets: string[] }[] = [
   { label: "MD5 → bcrypt 12", presets: ["md5", "bcrypt-12"] },
   { label: "SHA-256 → Argon2id (OWASP min)", presets: ["sha256", "argon2id-owasp"] },
   { label: "Password hashes side by side", presets: ["argon2id-owasp", "bcrypt-10", "scrypt-n17", "pbkdf2-sha256-600k"] },
+  { label: "Argon2id: Python vs Node.js", presets: ["argon2id-owasp", "argon2id-owasp@node"] },
 ];
 
 type Props = {
+  /** Python presets and their runnable Node.js twins (withNodeVariants) */
   presets: Preset[];
   selection: string[];
   reference: string | null;
@@ -40,7 +42,7 @@ export default function AlgorithmPicker(p: Props) {
       <h2 id="pick-title">Which algorithms?</h2>
       <div className="row" style={{ marginBottom: 12 }} role="group" aria-label="Run a common comparison now">
         <span className="muted" style={{ fontSize: 13 }}>Run now:</span>
-        {QUICK_PICKS.map((q) => (
+        {QUICK_PICKS.filter((q) => q.presets.every((id) => p.presets.some((x) => x.id === id))).map((q) => (
           <button key={q.label} onClick={() => p.onQuickRun(q.presets)} disabled={p.running}
                   title={`Start ${q.label}: ${p.trials} trials × ${p.durationS} s each (you can cancel)`}>
             <span aria-hidden>▶ </span>{q.label}
@@ -48,22 +50,31 @@ export default function AlgorithmPicker(p: Props) {
         ))}
       </div>
       <p className="muted" style={{ fontSize: 13, margin: "0 0 8px" }}>…or choose your own:</p>
-      <div className="row" role="group" aria-label={`Algorithms (pick 2 to ${MAX_ALGORITHMS})`}>
-        {p.presets.map((pr) => {
+      {(["python", "node"] as const).map((rt) => {
+        const group = p.presets.filter((pr) => (pr.runtime ?? "python") === rt);
+        if (!group.length) return null;
+        return (
+      <div key={rt} className="row" role="group" style={{ marginBottom: 6 }}
+           aria-label={`${rt === "node" ? "Node.js" : "Python"} algorithms (pick 2 to ${MAX_ALGORITHMS} in total)`}>
+        <span className="muted" style={{ fontSize: 12, minWidth: 56 }}>{rt === "node" ? "Node.js" : "Python"}</span>
+        {group.map((pr) => {
           const on = p.selection.includes(pr.id);
           return (
             <button key={pr.id} className="chip" aria-pressed={on} onClick={() => toggle(pr.id)}
                     disabled={p.running || (!on && p.selection.length >= MAX_ALGORITHMS)}
                     title={`${pr.label} · ${pr.library}`}>
               <span className={on ? "swatch" : "swatch empty"} style={on ? { background: colors[pr.id] } : undefined} aria-hidden />
-              <span>{pr.label}</span>
+              <span>{rt === "node" ? pr.label.replace(/ · Node.js$/, "") : pr.label}</span>
               <SecurityBadge security={pr.security} />
             </button>
           );
         })}
       </div>
+        );
+      })}
       <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
-        Up to {MAX_ALGORITHMS}. The reference is grey; the chips double as the chart legend.
+        Up to {MAX_ALGORITHMS}, from either runtime: same algorithm and parameters, a fresh worker process per trial. The
+        reference is grey; the chips double as the chart legend.
       </p>
       <div className="row" style={{ marginTop: 14, alignItems: "end", gap: 16 }}>
         <label className="field">

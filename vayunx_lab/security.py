@@ -54,6 +54,6 @@ def note_for_algorithm(algorithm: str | None, params: str | None = None) -> dict
 
 
 def security_note(preset: Preset) -> dict:
-    safe, meets_minimum, summary = _NOTES[preset.id]
+    safe, meets_minimum, summary = _NOTES[preset.base_id]
     return {"algorithm": preset.algorithm, "params": preset.params, "safe_for_passwords": safe,
             "meets_owasp_minimum": meets_minimum, "summary": summary, "reference": REFERENCE}

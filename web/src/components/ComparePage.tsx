@@ -8,7 +8,7 @@ import LabProgress from "@/components/LabProgress";
 import ResultView from "@/components/ResultView";
 import { EmptyState, ErrorState, Skeleton } from "@/components/States";
 import { ApiError, api } from "@/lib/api";
-import type { CompareResult, Experiment, Preset, Timeseries } from "@/lib/types";
+import { withNodeVariants, type CompareResult, type Experiment, type Preset, type Timeseries } from "@/lib/types";
 import { useStoredNumber } from "@/lib/useStored";
 
 const ACTIVE = ["queued", "running", "cancelling"];
@@ -41,7 +41,7 @@ export default function ComparePage() {
   const loading = view.key !== key;
 
   useEffect(() => {
-    api.presets().then(setPresets).catch(() => undefined); // an unreachable service surfaces via the main loader
+    api.presets().then((ps) => setPresets(withNodeVariants(ps))).catch(() => undefined); // an unreachable service surfaces via the main loader
   }, []);
 
   // Load whatever the URL points at. State is only set from async callbacks; the experiment is polled while it runs.

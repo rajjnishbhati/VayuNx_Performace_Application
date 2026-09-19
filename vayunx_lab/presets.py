@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from typing import Callable
 
@@ -32,12 +32,20 @@ class Preset:
     salted: bool
     library: str  # distribution name used for the version, or "hashlib"
     min_ops: int  # minimum operations per trial, for very slow variants
-    builder: Callable[[], Callable[[], bytes]]
+    builder: Callable[[], Callable[[], bytes]] | None
+    runtime: str = "python"  # "python" (vayunx_lab/worker.py) or "node" (vayunx_lab/node/worker.mjs)
+
+    @property
+    def base_id(self) -> str:
+        """The built-in preset this variant runs ("md5" for "md5@node")."""
+        return self.id.split("@", 1)[0]
 
     def make_op(self) -> Callable[[], bytes]:
         return self.builder()
 
     def library_version(self) -> str:
+        if self.runtime == "node":  # the worker reports the exact version with every result
+            return "bcrypt (npm)" if self.library == "bcrypt" else "node:crypto"
         if self.library == "hashlib":
             return f"hashlib ({ssl.OPENSSL_VERSION})"
         try:
@@ -47,7 +55,7 @@ class Preset:
 
     def public(self) -> dict:
         return {"id": self.id, "label": self.label, "algorithm": self.algorithm, "params": self.params,
-                "family": self.family, "salted": self.salted, "library": self.library_version()}
+                "family": self.family, "salted": self.salted, "library": self.library_version(), "runtime": self.runtime}
 
 
 def _md5():
@@ -98,8 +106,30 @@ _ALL = [
 PRESETS: dict[str, Preset] = {p.id: p for p in _ALL}
 
 
+RUNTIMES = ("python", "node")
+RUNTIME_LABELS = {"python": "Python", "node": "Node.js"}
+
+
+def split_variant(variant_id: str) -> tuple[str, str]:
+    """"md5" -> ("md5", "python"); "md5@node" -> ("md5", "node"). Raises PresetError otherwise."""
+    if not isinstance(variant_id, str):
+        raise PresetError(f"unknown preset {variant_id!r}; built-in presets: {', '.join(PRESETS)}")
+    base, sep, runtime = variant_id.partition("@")
+    if not sep:
+        return base, "python"
+    if runtime not in RUNTIMES or runtime == "python":
+        raise PresetError(f"unknown runtime in {variant_id!r}; use <preset> for Python or <preset>@node for Node.js")
+    return base, runtime
+
+
 def get_preset(preset_id: str) -> Preset:
+    """A built-in preset, or its Node.js twin ("<preset>@node"): same algorithm and parameters, other runtime."""
+    base_id, runtime = split_variant(preset_id)
     try:
-        return PRESETS[preset_id]
-    except (KeyError, TypeError):
-        raise PresetError(f"unknown preset {preset_id!r}; built-in presets: {', '.join(PRESETS)}") from None
+        base = PRESETS[base_id]
+    except KeyError:
+        raise PresetError(f"unknown preset {preset_id!r}; built-in presets: {', '.join(PRESETS)} "
+                          f"(add @node to run one in Node.js)") from None
+    if runtime == "python":
+        return base
+    return replace(base, id=preset_id, label=f"{base.label} · {RUNTIME_LABELS[runtime]}", runtime=runtime, builder=None)

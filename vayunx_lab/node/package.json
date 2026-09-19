@@ -1,0 +1,9 @@
+{
+  "name": "vayunx-lab-node-worker",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Node.js twin of the VAYUNX Lab worker. node:crypto covers MD5, SHA-256, PBKDF2, scrypt and Argon2id (Node >= 24.7); bcrypt needs the npm package.",
+  "type": "module",
+  "engines": { "node": ">=24.7" },
+  "dependencies": { "bcrypt": "6.0.0" }
+}

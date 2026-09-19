@@ -18,7 +18,18 @@ export type Preset = {
   salted: boolean;
   library: string;
   security: Security;
+  runtime?: "python" | "node";
+  /** the same preset run by the Node.js Lab worker (id "<id>@node"); availability as reported by that worker */
+  node?: { id: string; label: string; available: boolean; library: string | null; reason: string | null };
 };
+
+/** Python presets followed by their Node.js twins that can run on this machine. */
+export function withNodeVariants(presets: Preset[]): Preset[] {
+  const twins = presets.filter((p) => p.node?.available).map((p) => ({
+    ...p, id: p.node!.id, label: p.node!.label, library: p.node!.library ?? "node:crypto", runtime: "node" as const, node: undefined,
+  }));
+  return [...presets.map((p) => ({ ...p, runtime: p.runtime ?? ("python" as const) })), ...twins];
+}
 
 export type Flag = { code: string; message: string; affects: string[] };
 

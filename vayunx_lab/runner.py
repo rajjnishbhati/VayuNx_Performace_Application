@@ -25,6 +25,7 @@ from typing import Callable
 import psutil
 
 from vayunx_lab.env import fingerprint
+from vayunx_lab.node_runtime import node_executable, worker_path
 from vayunx_lab.presets import get_preset
 from vayunx_lab.worker import ALLOWED_CONCURRENCY, MAX_DURATION_S
 from vayunx_profiler_sdk.metrics import UNITS, MachineReader, ProcessReader
@@ -128,6 +129,8 @@ class ExperimentRunner:
             raise ValueError(f"duration_s must be in (0, {MAX_DURATION_S}]")
         if concurrency not in ALLOWED_CONCURRENCY:
             raise ValueError(f"concurrency must be one of {ALLOWED_CONCURRENCY}")
+        if concurrency != 1 and any(p.runtime == "node" for p in self.presets):
+            raise ValueError("the Node.js runner supports concurrency 1 only; run Node.js variants with concurrency 1")
         reference = reference or preset_ids[0]
         if reference not in preset_ids:
             raise ValueError("reference must be one of the chosen presets")
@@ -187,9 +190,19 @@ class ExperimentRunner:
             self.store.set_status(exp_id, "failed", error=f"unexpected error: {exc!r}")
             return "failed"
 
+    def _command(self, preset_id: str) -> list[str]:
+        preset = get_preset(preset_id)  # allow-list check again, right before launching anything
+        args = ["--preset", preset.base_id, "--duration", str(self.duration_s), "--warmup", str(self.warmup_s),
+                "--concurrency", str(self.concurrency)]
+        if preset.runtime == "node":
+            node = node_executable()
+            if node is None:
+                raise TrialError("Node.js was not found; install it or set VAYUNX_NODE to run Node.js variants")
+            return [node, str(worker_path()), *args]
+        return [self.python, "-m", "vayunx_lab.worker", *args]
+
     def _run_trial(self, preset_id: str) -> tuple[dict, "_TrialSampler", dict]:
-        cmd = [self.python, "-m", "vayunx_lab.worker", "--preset", preset_id, "--duration", str(self.duration_s),
-               "--warmup", str(self.warmup_s), "--concurrency", str(self.concurrency)]
+        cmd = self._command(preset_id)
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as exc:
@@ -214,8 +227,19 @@ class ExperimentRunner:
                 events.append(event)
                 if event["event"] == "measure_start":
                     busy["start"] = machine_busy_cpu_s()
+                    if sampler is not None:  # read from outside, for workers that cannot count these themselves
+                        try:
+                            wp = psutil.Process(sampler.pid)
+                            busy["threads"], busy["ctx_start"] = wp.num_threads(), sum(wp.num_ctx_switches()[:2])
+                        except psutil.Error:
+                            pass
                 elif event["event"] == "measure_end":
                     busy["end"] = machine_busy_cpu_s()
+                    if sampler is not None and "ctx_start" in busy:
+                        try:
+                            busy["ctx_end"] = sum(psutil.Process(sampler.pid).num_ctx_switches()[:2])
+                        except psutil.Error:
+                            pass
                 if event["event"] == "ready" and sampler is None:
                     sampler = _TrialSampler(event["pid"], self.sample_interval_s)
                     sampler.start()
@@ -233,4 +257,19 @@ class ExperimentRunner:
             raise Cancelled()
         if proc.returncode != 0 or not events or events[-1]["event"] != "result":
             raise TrialError(f"worker for {preset_id} failed (exit {proc.returncode}): {proc.stderr.read()[-500:]}")
-        return events[-1], sampler or _TrialSampler(0, self.sample_interval_s), busy
+        result = events[-1]
+        sampler = sampler or _TrialSampler(0, self.sample_interval_s)
+        if result.get("threads_max") is None:  # the Node.js worker: thread count as seen by this process's sampler
+            seen = [r["value"] for r in sampler.rows if r["metric_name"] == "proc_threads"]
+            if "threads" in busy:
+                seen.append(busy["threads"])
+            if not seen:
+                raise TrialError(f"worker for {preset_id} reported no thread count and none could be sampled")
+            result["threads_max"] = int(max(seen))
+            result["threads_max_method"] = "sampled by the runner (psutil)"
+        if result.get("ctx_switches") is None:  # libuv reports none on Windows: count them from outside instead
+            if "ctx_end" not in busy:
+                raise TrialError(f"worker for {preset_id} reported no context switches and none could be read")
+            result["ctx_switches"] = busy["ctx_end"] - busy["ctx_start"]
+            result["ctx_switches_method"] = "psutil, read by the runner at measure_start / measure_end"
+        return result, sampler, busy
