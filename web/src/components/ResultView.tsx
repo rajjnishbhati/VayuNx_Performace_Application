@@ -7,6 +7,7 @@ import FlagNote, { flagsFor } from "@/components/FlagNote";
 import SecurityBadge from "@/components/SecurityBadge";
 import { Skeleton } from "@/components/States";
 import Tabs from "@/components/Tabs";
+import { api } from "@/lib/api";
 import { colorMap } from "@/lib/colors";
 import { fmtBytes, fmtCores, fmtDate, fmtInt, fmtNs } from "@/lib/format";
 import type { CompareResult, Timeseries, Variant } from "@/lib/types";
@@ -288,25 +289,69 @@ function Details({ r }: { r: CompareResult }) {
   );
 }
 
-/** Downloads of exactly this comparison (same parameters as the screen). */
-function Exports({ r }: { r: CompareResult }) {
+/** Downloads of exactly this comparison (same parameters as the screen), and a share link. */
+function Exports({ r, sharedToken }: { r: CompareResult; sharedToken?: string }) {
+  const [days, setDays] = useState(7);
+  const [link, setLink] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+  if (sharedToken) {
+    const base = `/api/v2/shared/${encodeURIComponent(sharedToken)}`;
+    return (
+      <div className="row" style={{ gap: 12, fontSize: 13, marginTop: 8 }} aria-label="Download this comparison">
+        <span className="muted">Download:</span>
+        <a href={`${base}.pdf`} download>PDF report</a>
+        <a href={`${base}.csv`} download>Scorecard (CSV)</a>
+      </div>
+    );
+  }
   const q = new URLSearchParams();
   if (r.experiment) q.set("experiment_id", r.experiment.experiment_id);
   else if (r.runs) q.set("run_ids", r.runs.map((x) => x.run_id).join(","));
   q.set("reference", r.reference);
-  const link = (path: string, extra = "") => `/api/v2/${path}?${q}${extra}`;
+  const href = (p: string, extra = "") => `/api/v2/${p}?${q}${extra}`;
+  const share = () => {
+    setShareError(null);
+    api.share({ experiment_id: r.experiment?.experiment_id, run_ids: r.experiment ? undefined : r.runs?.map((x) => x.run_id),
+      reference: r.reference, expires_days: days })
+      .then((s) => setLink(`${window.location.origin}${s.url}`))
+      .catch((e) => setShareError(e.message));
+  };
   return (
-    <div className="row" style={{ gap: 12, fontSize: 13, marginTop: 8 }} aria-label="Download this comparison">
-      <span className="muted">Download:</span>
-      <a href={link("compare.pdf")} download>PDF report</a>
-      <a href={link("compare.csv")} download>Scorecard (CSV)</a>
-      <a href={link("compare.csv", "&kind=trials")} download>Per-trial data (CSV)</a>
+    <div style={{ marginTop: 8 }}>
+      <div className="row" style={{ gap: 12, fontSize: 13 }} aria-label="Download or share this comparison">
+        <span className="muted">Download:</span>
+        <a href={href("compare.pdf")} download>PDF report</a>
+        <a href={href("compare.csv")} download>Scorecard (CSV)</a>
+        <a href={href("compare.csv", "&kind=trials")} download>Per-trial data (CSV)</a>
+        <span className="spacer" style={{ flex: 1 }} />
+        <label className="muted">Share for
+          <select aria-label="Share link lifetime" value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ marginLeft: 6 }}>
+            <option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option>
+          </select>
+        </label>
+        <button onClick={share}>Create share link</button>
+      </div>
+      {shareError && <p role="alert" style={{ color: "var(--critical-ink)", fontSize: 13 }}>{shareError}</p>}
+      {link && (
+        <div role="status" className="card" style={{ background: "var(--surface-2)", marginTop: 8 }}>
+          <p style={{ margin: "0 0 6px", fontSize: 13 }}>
+            Anyone with this link can see this comparison (read-only) for {days} days, without signing in. It is shown only now.
+          </p>
+          <pre className="code-block" style={{ userSelect: "all" }}>{link}</pre>
+          <div className="row" style={{ gap: 8 }}>
+            <button onClick={() => { navigator.clipboard?.writeText(link); }}>Copy</button>
+            <button onClick={() => setLink(null)}>Done</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export default function ResultView({ result, ts, tsLoading, onReference }: {
+export default function ResultView({ result, ts, tsLoading, onReference, sharedToken }: {
   result: CompareResult; ts: Timeseries | null; tsLoading: boolean; onReference?: (key: string) => void;
+  /** set on /shared/<token>: read-only, downloads go through the link */
+  sharedToken?: string;
 }) {
   const [tab, setTab] = useState("app");
   const order = result.experiment?.params.presets ?? result.variants.map((v) => v.key);
@@ -317,7 +362,7 @@ export default function ResultView({ result, ts, tsLoading, onReference }: {
         <h2 id="verdict-title" className="sr-only">Result</h2>
         <p className="verdict" aria-live="polite">{result.verdict}</p>
         <Scorecard r={result} colors={colors} onReference={onReference} />
-        <Exports r={result} />
+        <Exports r={result} sharedToken={sharedToken} />
       </section>
       <section className="card">
         <Tabs active={tab} onChange={setTab} tabs={[

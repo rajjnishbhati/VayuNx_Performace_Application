@@ -234,3 +234,19 @@ class ProjectGrant(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), primary_key=True)
     team_id: Mapped[str] = mapped_column(ForeignKey("teams.team_id"), primary_key=True)
     role: Mapped[str] = mapped_column(String(16))
+
+
+class ShareLink(Base):
+    """A read-only link to one comparison (Phase 4). Only a SHA-256 of the link's token is stored."""
+
+    __tablename__ = "share_links"
+
+    share_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_json: Mapped[str] = mapped_column(Text)  # {"experiment_id" | "run_ids", "reference"}
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)  # user_id; None when sign-in is off
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    views: Mapped[int] = mapped_column(Integer, default=0)

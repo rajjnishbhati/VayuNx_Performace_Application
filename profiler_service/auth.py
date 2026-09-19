@@ -42,6 +42,7 @@ LOGIN_COOKIE = "vayunx_login"
 TOKEN_PREFIX = "vx_"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 PUBLIC_PATHS = {"/auth/login", "/auth/callback", "/auth/logout", "/auth/me"}
+PUBLIC_PREFIXES = ("/v2/shared/",)  # share links: the token in the path is the credential (see shares.py)
 ASYMMETRIC_ALGS = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 
 
@@ -227,7 +228,7 @@ def install(app, cfg: AuthConfig, html_routes: set[str]) -> None:
     @app.middleware("http")
     async def require_identity(request: Request, call_next):
         path = request.url.path
-        if path in PUBLIC_PATHS:
+        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await call_next(request)
         who = await run_in_threadpool(identify, request.app.state.sessionmaker, request.cookies.get(SESSION_COOKIE),
                                       _bearer(request))

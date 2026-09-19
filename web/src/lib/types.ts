@@ -196,3 +196,8 @@ export type RetentionReport = {
   project_id: string; retention_days: number | null; cutoff?: string; dry_run: boolean; runs: number; spans?: number;
   samples?: number; op_stats?: number; trial_results?: number; experiments?: number; purged_at?: string;
 };
+
+export type ShareItem = {
+  share_id: string; project_id: string; created_at: string; expires_at: string; revoked: boolean; views: number;
+  target: { experiment_id: string | null; run_ids: string[] | null; reference: string | null };
+};

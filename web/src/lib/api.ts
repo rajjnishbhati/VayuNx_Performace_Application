@@ -1,5 +1,5 @@
 // Typed client for the Profiler Service. Requests go to /api/*, which next.config.ts rewrites to the service.
-import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, ProjectItem, RetentionReport, RunItem, TeamItem, Timeseries } from "./types";
+import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, ProjectItem, RetentionReport, RunItem, ShareItem, TeamItem, Timeseries } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public fix: string) {
@@ -42,7 +42,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw SERVICE_DOWN;
   }
   const body = await res.json().catch(() => null);
-  if (res.status === 401 && body?.detail?.login_url && typeof window !== "undefined") {
+  const onSharedPage = typeof window !== "undefined" && window.location.pathname.startsWith("/shared/");
+  if (res.status === 401 && body?.detail?.login_url && typeof window !== "undefined" && !onSharedPage) {
     // sign-in required (VAYUNX_AUTH=oidc): go through the identity provider and come back to this page.
     // A full navigation on purpose: /api/auth/login is the Service (proxied), not a Next.js page.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
@@ -85,6 +86,10 @@ export const api = {
     request<RetentionReport>(`/v2/projects/${encodeURIComponent(id)}/retention/preview?days=${days}`),
   setRetention: (id: string, days: number | null) =>
     request<ProjectItem>(`/v2/projects/${encodeURIComponent(id)}/retention`, json("PUT", { days })),
+  share: (body: { experiment_id?: string; run_ids?: string[]; reference: string; expires_days: number }) =>
+    request<ShareItem & { url: string }>("/v2/shares", json("POST", body)),
+  shared: (token: string) => request<CompareResult & { shared: { expires_at: string; created_at: string } }>(`/v2/shared/${encodeURIComponent(token)}`),
+  sharedTimeseries: (token: string) => request<Timeseries>(`/v2/shared/${encodeURIComponent(token)}/timeseries`),
   teams: () => request<TeamItem[]>("/v2/teams"),
   createTeam: (name: string) => request<TeamItem>("/v2/teams", json("POST", { name })),
   addMember: (teamId: string, email: string) => request<unknown>(`/v2/teams/${encodeURIComponent(teamId)}/members`, json("POST", { email })),

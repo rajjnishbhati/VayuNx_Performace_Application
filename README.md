@@ -137,6 +137,16 @@ screen, through the same access checks: `GET /v2/compare.pdf|compare.csv?experim
 In the CSV files, text a spreadsheet would run as a formula (starting with `=` `+` `-` `@`) gets a leading
 apostrophe. The only exception is the exact change format this service writes (`+15.8%`).
 
+**Share links (Phase 4).** **Create share link** under a comparison makes a read-only link to exactly that
+comparison and its fixed reference: machine view and PDF/CSV included, nothing else. It lasts 7, 30 or 90 days
+(API: 1-90), and anyone with it can open it without signing in.
+- **The token:** shown once, stored as a SHA-256.
+- **Revoking:** a link can be revoked (`DELETE /v2/shares/{id}`) by its creator, the project's admins or an administrator.
+- **Views:** a counter records how often the comparison was opened.
+- **Missing data:** if the data is gone, for example removed by retention, the link answers 410 Gone.
+- **API:** `POST /v2/shares` (`experiment_id` or `run_ids`, `reference`, `expires_days`), `GET /v2/shares`,
+  `GET /v2/shared/{token}` (and `/timeseries`, `.pdf`, `.csv`).
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -791,4 +801,8 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
 23. **Retention defaults to keep forever.** No project deletes data until an admin sets a limit. The limit
     goes by a run's creation time, and a purge cannot be undone (no soft delete or archive). Confirm this
     matches the organisation's data policy, including whether exports should be taken first.
+24. **Share links reach anyone who has the link.** Holding the link is the only check; there is no "people in my
+    organisation only" option and no password. They are read-only and expire after at most 90 days. The shared
+    page still shows the app's navigation, which asks for sign-in. Confirm this fits the organisation's rules for
+    sharing measurement data.
 
