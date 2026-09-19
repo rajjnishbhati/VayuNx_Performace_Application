@@ -1,5 +1,5 @@
 // Typed client for the Profiler Service. Requests go to /api/*, which next.config.ts rewrites to the service.
-import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, ProjectItem, RunItem, TeamItem, Timeseries } from "./types";
+import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, ProjectItem, RetentionReport, RunItem, TeamItem, Timeseries } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public fix: string) {
@@ -81,6 +81,10 @@ export const api = {
     const r = await fetch(`/api/v2/projects/${encodeURIComponent(id)}/grants/${encodeURIComponent(teamId)}`, { method: "DELETE" });
     if (!r.ok) throw new ApiError(r.status, "Could not remove the grant.", "Reload the page and try again.");
   },
+  retentionPreview: (id: string, days: number) =>
+    request<RetentionReport>(`/v2/projects/${encodeURIComponent(id)}/retention/preview?days=${days}`),
+  setRetention: (id: string, days: number | null) =>
+    request<ProjectItem>(`/v2/projects/${encodeURIComponent(id)}/retention`, json("PUT", { days })),
   teams: () => request<TeamItem[]>("/v2/teams"),
   createTeam: (name: string) => request<TeamItem>("/v2/teams", json("POST", { name })),
   addMember: (teamId: string, email: string) => request<unknown>(`/v2/teams/${encodeURIComponent(teamId)}/members`, json("POST", { email })),

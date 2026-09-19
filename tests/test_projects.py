@@ -152,3 +152,12 @@ def test_otlp_data_lands_in_the_tokens_project(org, monkeypatch):
     run = json.loads(Browser().request(f"{url}/v1/runs/{st['run_id']}", headers={"Authorization": f"Bearer {token}"})[2])
     assert run["project_id"] == "payments"
     assert org["people"]["dave"].request(f"{url}/v1/runs/{st['run_id']}")[0] == 404
+
+
+def test_only_project_admins_manage_retention(org):
+    url, same, p = org["url"], org["same"], org["people"]
+    assert p["bob"].request(f"{url}/v2/projects/payments/retention", "PUT", {"days": 30}, same)[0] == 403
+    assert p["bob"].request(f"{url}/v2/projects/payments/retention/preview?days=30")[0] == 403
+    assert p["dave"].request(f"{url}/v2/projects/payments/retention/preview?days=30")[0] == 404
+    assert p["carol"].request(f"{url}/v2/projects/payments/retention", "PUT", {"days": 30}, same)[0] == 200
+    assert p["carol"].request(f"{url}/v2/projects/payments/retention", "PUT", {"days": None}, same)[0] == 200

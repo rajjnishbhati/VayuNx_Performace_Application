@@ -10,6 +10,7 @@ Anything a person cannot view answers 404, exactly like something that does not 
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -169,13 +170,19 @@ class MemberIn(BaseModel):
     email: str = Field(min_length=3, max_length=320)
 
 
+class RetentionIn(BaseModel):
+    days: int | None = Field(description="keep data this many days (1-3650); null keeps it forever")
+
+
 class GrantIn(BaseModel):
     team_id: str
     role: str = Field(pattern="^(viewer|editor|admin)$")
 
 
 def _project_out(p: Project, access: Access, session: Session) -> dict:
-    out = {"project_id": p.project_id, "name": p.name, "default_role": p.default_role, "my_role": access.role(p.project_id)}
+    out = {"project_id": p.project_id, "name": p.name, "default_role": p.default_role, "my_role": access.role(p.project_id),
+           "retention_days": p.retention_days,
+           "retention_last_purge": json.loads(p.retention_last_purge_json) if p.retention_last_purge_json else None}
     if access.can(p.project_id, "admin"):
         grants = session.execute(select(ProjectGrant.team_id, ProjectGrant.role, Team.name)
                                  .join(Team, Team.team_id == ProjectGrant.team_id)
@@ -256,6 +263,40 @@ def delete_grant(request: Request, project_id: str, team_id: str):
             s.delete(g)
             s.commit()
     return Response(status_code=204)
+
+
+def _admin_project(request: Request, s: Session, project_id: str) -> Project:
+    access = access_for(request, s)
+    p = s.get(Project, project_id)
+    if p is None or not access.can(project_id):
+        raise _problem(404, f"No such project: {project_id!r}.", "Pick a project from GET /v2/projects.")
+    access.require(project_id, "admin", "project")
+    return p
+
+
+@router.get("/projects/{project_id}/retention/preview")
+def preview_retention(request: Request, project_id: str, days: int) -> dict:
+    """What a purge with this setting would delete now - nothing is deleted."""
+    from profiler_service.retention import MAX_DAYS, MIN_DAYS, purge
+    if not MIN_DAYS <= days <= MAX_DAYS:
+        raise _problem(422, f"Retention must be {MIN_DAYS}-{MAX_DAYS} days.", "Pick a number of days in that range.")
+    with _session(request) as s:
+        _admin_project(request, s, project_id)
+    return purge(request.app.state.sessionmaker, project_id, days=days, dry_run=True)
+
+
+@router.put("/projects/{project_id}/retention")
+def set_retention(request: Request, project_id: str, body: RetentionIn) -> dict:
+    """Keep this project's data for N days (the hourly purge then deletes older runs), or forever (null)."""
+    from profiler_service.retention import MAX_DAYS, MIN_DAYS
+    if body.days is not None and not MIN_DAYS <= body.days <= MAX_DAYS:
+        raise _problem(422, f"Retention must be {MIN_DAYS}-{MAX_DAYS} days, or null to keep data forever.",
+                       "Preview first with GET .../retention/preview?days=N.")
+    with _session(request) as s:
+        p = _admin_project(request, s, project_id)
+        p.retention_days = body.days
+        s.commit()
+        return _project_out(p, access_for(request, s), s)
 
 
 @router.get("/teams")

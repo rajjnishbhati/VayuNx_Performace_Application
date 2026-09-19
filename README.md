@@ -117,6 +117,15 @@ API: `GET/POST /v2/projects`, `PATCH /v2/projects/{id}` (name, default role),
 `PUT/DELETE /v2/projects/{id}/grants[/{team}]`, `GET/POST /v2/teams`,
 `POST/DELETE /v2/teams/{id}/members[/{user}]`, `GET /v2/users`. List endpoints accept `?project=`.
 
+**Data retention (Phase 4).** Each project keeps its data **forever unless a project admin chooses otherwise**
+(Settings → Projects & access → Keep data: 30 to 730 days). The page shows first what would be deleted and
+asks for confirmation. After that an hourly purge deletes that project's runs older than the limit, with
+their spans, samples, op summaries and Lab trial rows, then its experiments that have no runs left.
+Experiments still running are never touched, and other projects are untouched. The last purge is recorded on the
+project. API: `GET /v2/projects/{id}/retention/preview?days=N` (counts only), `PUT /v2/projects/{id}/retention`
+`{"days": N | null}`. `VAYUNX_RETENTION=off` stops all purges; `VAYUNX_RETENTION_INTERVAL_S` changes the hourly
+schedule.
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -768,4 +777,7 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
       teams is not built).
     - The Default project gives every signed-in person the editor role, so existing use keeps working.
     - New role words (`viewer` / `editor` / `admin`) sit next to VAYUNX's severity and verdict scales.
+23. **Retention defaults to keep forever.** No project deletes data until an admin sets a limit. The limit
+    goes by a run's creation time, and a purge cannot be undone (no soft delete or archive). Confirm this
+    matches the organisation's data policy, including whether exports should be taken first.
 

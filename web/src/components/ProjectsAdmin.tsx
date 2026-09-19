@@ -3,7 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState } from "@/components/States";
 import { ApiError, api } from "@/lib/api";
-import type { Me, ProjectItem, Role, TeamItem } from "@/lib/types";
+import type { Me, ProjectItem, RetentionReport, Role, TeamItem } from "@/lib/types";
+
+const KEEP_OPTIONS = [30, 90, 180, 365, 730];
+
+function describe(r: RetentionReport): string {
+  const parts = [`${r.runs} run${r.runs === 1 ? "" : "s"}`];
+  if (r.spans) parts.push(`${r.spans} spans`);
+  if (r.samples) parts.push(`${r.samples} samples`);
+  if (r.op_stats) parts.push(`${r.op_stats} op summaries`);
+  if (r.experiments) parts.push(`${r.experiments} experiment${r.experiments === 1 ? "" : "s"}`);
+  return parts.join(", ");
+}
 
 /** Settings: projects, who gets which role, and teams. What is shown follows what this person may change. */
 export default function ProjectsAdmin({ me }: { me: Me }) {
@@ -16,6 +27,12 @@ export default function ProjectsAdmin({ me }: { me: Me }) {
   const [newTeam, setNewTeam] = useState("");
   const [member, setMember] = useState<Record<string, string>>({});
   const [grant, setGrant] = useState<Record<string, { team: string; role: Role }>>({});
+  const [pending, setPending] = useState<{ project: ProjectItem; days: number; preview: RetentionReport } | null>(null);
+  const chooseKeep = (p: ProjectItem, value: string) => {
+    if (value === "forever") { run(api.setRetention(p.project_id, null)); return; }
+    const days = Number(value);
+    api.retentionPreview(p.project_id, days).then((preview) => setPending({ project: p, days, preview })).catch((e) => setError(e as ApiError));
+  };
 
   const load = useCallback(() => {
     api.projects().then(setProjects).catch(setError);
@@ -38,16 +55,31 @@ export default function ProjectsAdmin({ me }: { me: Me }) {
       <div className="scroll-x">
         <table className="data">
           <thead>
-            <tr><th scope="col">Project</th>{signIn && <><th scope="col">Your role</th><th scope="col">Everyone signed in</th><th scope="col">Teams</th></>}</tr>
+            <tr><th scope="col">Project</th><th scope="col">Keep data</th>{signIn && <><th scope="col">Your role</th><th scope="col">Everyone signed in</th><th scope="col">Teams</th></>}</tr>
           </thead>
           <tbody>
-            {!projects && <tr><td colSpan={4}><div className="skeleton" style={{ height: 18 }} aria-hidden /></td></tr>}
+            {!projects && <tr><td colSpan={5}><div className="skeleton" style={{ height: 18 }} aria-hidden /></td></tr>}
             {projects?.map((p) => {
               const canAdmin = p.my_role === "admin";
               const g = grant[p.project_id] ?? { team: teams[0]?.team_id ?? "", role: "viewer" as Role };
               return (
                 <tr key={p.project_id}>
                   <th scope="row" style={{ fontWeight: 500 }}>{p.name}<div className="muted mono">{p.project_id}</div></th>
+                  <td>
+                    {canAdmin ? (
+                      <select aria-label={`Keep data in ${p.name}`} value={p.retention_days ?? "forever"}
+                              onChange={(e) => chooseKeep(p, e.target.value)}>
+                        <option value="forever">forever</option>
+                        {[...new Set([...KEEP_OPTIONS, ...(p.retention_days ? [p.retention_days] : [])])].sort((a, b) => a - b)
+                          .map((d) => <option key={d} value={d}>{d} days</option>)}
+                      </select>
+                    ) : (p.retention_days ? `${p.retention_days} days` : "forever")}
+                    {p.retention_last_purge?.purged_at && (
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        last purge {new Date(p.retention_last_purge.purged_at).toLocaleString()}: {describe(p.retention_last_purge)}
+                      </div>
+                    )}
+                  </td>
                   {signIn && (
                     <>
                       <td>{p.my_role ?? "–"}</td>
@@ -88,6 +120,26 @@ export default function ProjectsAdmin({ me }: { me: Me }) {
           </tbody>
         </table>
       </div>
+
+      {pending && (
+        <div role="alertdialog" aria-labelledby="keep-title" className="card" style={{ borderColor: "var(--warning)", marginTop: 12 }}>
+          <h3 id="keep-title" style={{ marginTop: 0 }}>Keep {pending.project.name} data for {pending.days} days?</h3>
+          <p>
+            <span aria-hidden>⚠ </span>
+            {pending.preview.runs
+              ? <>The next hourly purge <strong>permanently deletes {describe(pending.preview)}</strong> recorded before{" "}
+                  {new Date(pending.preview.cutoff ?? "").toLocaleDateString()}, and keeps deleting data as it passes {pending.days} days.</>
+              : <>Nothing is old enough to delete today. From now on, data in this project is deleted once it is {pending.days} days old.</>}
+            {" "}Other projects are not affected. This cannot be undone.
+          </p>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn-primary" onClick={() => { const p = pending; setPending(null); run(api.setRetention(p.project.project_id, p.days)); }}>
+              Keep {pending.days} days
+            </button>
+            <button onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {globalAdmin && (
         <form className="row" style={{ gap: 8, alignItems: "end", marginTop: 12 }}

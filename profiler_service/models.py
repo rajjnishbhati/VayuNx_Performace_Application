@@ -207,6 +207,8 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(128))
     default_role: Mapped[str | None] = mapped_column(String(16), nullable=True)  # None | viewer | editor
     created_at: Mapped[datetime] = mapped_column(DateTime)
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = keep forever (the default)
+    retention_last_purge_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Team(Base):

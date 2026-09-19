@@ -26,6 +26,7 @@ from profiler_service.auth import install as install_auth
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
 from profiler_service.lab_jobs import LabJobs
 from profiler_service.otlp import router as otlp_router
+from profiler_service.retention import RetentionScheduler
 from profiler_service.models import OpStat, Run, Sample, Span
 from profiler_service.report_html import render_error, render_index, render_report
 from profiler_service.runs_view import runs_out
@@ -60,7 +61,10 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
         app.state.sessionmaker = make_sessionmaker(app.state.engine)
         app.state.lab_jobs = LabJobs(app.state.sessionmaker)
         app.state.lab_jobs.recover()  # experiments left "running" by a previous process are marked failed
+        app.state.retention = RetentionScheduler(app.state.sessionmaker)  # purges only projects that opted in
+        app.state.retention.start()
         yield
+        app.state.retention.stop_event.set()
         app.state.lab_jobs.cancel_current()
         app.state.engine.dispose()
 

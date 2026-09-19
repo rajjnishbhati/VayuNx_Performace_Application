@@ -185,7 +185,14 @@ export type Role = "viewer" | "editor" | "admin";
 
 export type ProjectItem = {
   project_id: string; name: string; default_role: "viewer" | "editor" | null; my_role: Role | null;
+  retention_days: number | null; retention_last_purge: RetentionReport | null;
   grants?: { team_id: string; team: string; role: Role }[];
 };
 
 export type TeamItem = { team_id: string; name: string; members: { user_id: string; email: string | null; name: string | null }[] };
+
+/** What a retention purge deleted - or, with dry_run, would delete. */
+export type RetentionReport = {
+  project_id: string; retention_days: number | null; cutoff?: string; dry_run: boolean; runs: number; spans?: number;
+  samples?: number; op_stats?: number; trial_results?: number; experiments?: number; purged_at?: string;
+};
