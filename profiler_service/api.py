@@ -21,6 +21,7 @@ from profiler_service.comparison import SampleRec, SpanRec, build_report
 from profiler_service.api_v2 import router as v2_router
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
 from profiler_service.lab_jobs import LabJobs
+from profiler_service.otlp import router as otlp_router
 from profiler_service.models import OpStat, Run, Sample, Span
 from profiler_service.report_html import render_error, render_index, render_report
 from profiler_service.runs_view import runs_out
@@ -55,6 +56,7 @@ def create_app(db_url: str | None = None) -> FastAPI:
                   description="Language-agnostic span/sample ingestion, baseline-vs-remediated comparison and flame-graph reports. "
                               "Demo build - no auth.")
     app.include_router(v2_router)
+    app.include_router(otlp_router)  # OTLP/HTTP: POST /v1/traces, POST /v1/metrics
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):

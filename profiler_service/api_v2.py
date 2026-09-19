@@ -288,6 +288,36 @@ def compare_v2(session: SessionDep, experiment_id: str | None = None, run_ids: s
     return result
 
 
+# ----------------------------------------------------------------------------- run detail
+
+
+def _load_run(session: Session, run_id: str) -> Run:
+    run = session.get(Run, run_id)
+    if run is None:
+        raise problem(404, f"No run with id {run_id!r}.", "Pick a run from GET /v2/runs.")
+    return run
+
+
+@router.get("/runs/{run_id}/spans")
+def run_spans(run_id: str, session: SessionDep, limit: int = Query(5000, ge=1, le=50000)) -> list[dict]:
+    _load_run(session, run_id)
+    rows = session.scalars(select(Span).where(Span.run_id == run_id).order_by(Span.start_time).limit(limit))
+    return [{"span_id": s.span_id, "parent_span_id": s.parent_span_id, "span_name": s.span_name, "category": s.category,
+             "start_time": iso_utc(s.start_time), "end_time": iso_utc(s.end_time), "duration_ms": s.duration_ms,
+             "attributes": json.loads(s.attributes_json)} for s in rows]
+
+
+@router.get("/runs/{run_id}/samples")
+def run_samples(run_id: str, session: SessionDep, metric: str | None = None,
+                limit: int = Query(20000, ge=1, le=200000)) -> list[dict]:
+    _load_run(session, run_id)
+    q = select(Sample).where(Sample.run_id == run_id)
+    if metric:
+        q = q.where(Sample.metric_name == metric)
+    return [{"metric_name": s.metric_name, "category": s.category, "value": s.value, "unit": s.unit,
+             "timestamp": iso_utc(s.timestamp)} for s in session.scalars(q.order_by(Sample.timestamp).limit(limit))]
+
+
 # ----------------------------------------------------------------------------- runs search
 
 
