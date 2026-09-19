@@ -11,3 +11,8 @@ opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp-proto-http==1.44.0
 opentelemetry-proto==1.44.0
 pytest>=8
+# test-only: the SDK's hook tests exercise these libraries
+passlib>=1.7
+PyNaCl>=1.5
+PyJWT>=2.8
+cryptography>=42
