@@ -50,6 +50,7 @@ class TrialInput:
     family: str | None = None  # "password-hash" | "fast-hash" | None
     security: dict | None = None
     peak_rss_approximate: bool = False
+    exact_percentiles: dict | None = None  # {"p25_ns","p50_ns","p75_ns","p95_ns","p99_ns"} from raw durations
     extra: dict = field(default_factory=dict)
 
 
@@ -85,10 +86,12 @@ def aggregate_variant(trials: list[TrialInput]) -> dict:
         h = LatencyHistogram.from_dict(t.histogram)
         if not h.count:
             continue
-        p25, p75 = h.percentile(25), h.percentile(75)
-        per_trial.append({"trial_index": t.trial_index, "ops": h.count, "p50": h.percentile(50), "p95": h.percentile(95),
-                          "p99": h.percentile(99), "mean": h.sum_ns / h.count, "iqr": (p75 - p25) if p25 is not None else None,
-                          "wall_s": t.wall_s, "noisy": t.noisy})
+        ex = t.exact_percentiles  # exact nearest-rank values when the trial kept raw durations
+        q = (lambda k, p: ex[k]) if ex else (lambda k, p: h.percentile(p))
+        p25, p75 = q("p25_ns", 25), q("p75_ns", 75)
+        per_trial.append({"trial_index": t.trial_index, "ops": h.count, "p50": q("p50_ns", 50), "p95": q("p95_ns", 95),
+                          "p99": q("p99_ns", 99), "mean": h.sum_ns / h.count, "iqr": (p75 - p25) if p25 is not None else None,
+                          "wall_s": t.wall_s, "noisy": t.noisy, "exact": bool(ex)})
     medians = [p["p50"] for p in per_trial]
     median_ns = _median(medians)
     mem_per_op = _median([(t.peak_rss_bytes - t.rss_before_bytes) / max(1, t.concurrency)
@@ -103,6 +106,7 @@ def aggregate_variant(trials: list[TrialInput]) -> dict:
             "mean_ns": _median([p["mean"] for p in per_trial]), "iqr_ns": _median([p["iqr"] for p in per_trial]),
             "trial_medians_ns": medians, "range_ns": [min(medians), max(medians)] if medians else None,
             "ci95_ns": _bootstrap_ci(medians),
+            "percentile_method": "exact" if per_trial and all(p["exact"] for p in per_trial) else "histogram (±6.25%)",
         },
         "cpu": {"cpu_s_per_op": cpu_s_per_op, "ops_per_s_per_core": (1 / cpu_s_per_op) if cpu_s_per_op else None,
                 "cores_busy": _median([t.cores_busy for t in trials])},

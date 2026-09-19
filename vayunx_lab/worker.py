@@ -57,16 +57,32 @@ def timer_overhead_ns(iterations: int = 20_000) -> float:
     return float(h.percentile(50))
 
 
-def _measure(op, duration_s: float, min_ops: int, concurrency: int, proc: psutil.Process) -> tuple[LatencyHistogram, int]:
+EXACT_LIMIT = 200_000  # keep raw durations up to this many ops so slow variants get exact percentiles
+
+
+def exact_percentiles(raw: list[int]) -> dict | None:
+    """Nearest-rank percentiles from raw durations; None when the raw list was not kept (too many ops)."""
+    if not raw:
+        return None
+    s = sorted(raw)
+    pick = lambda q: s[min(len(s) - 1, max(0, -(-len(s) * q // 100) - 1))]  # noqa: E731 - ceil(n*q/100)-1
+    return {"p25_ns": pick(25), "p50_ns": pick(50), "p75_ns": pick(75), "p95_ns": pick(95), "p99_ns": pick(99)}
+
+
+def _measure(op, duration_s: float, min_ops: int, concurrency: int, proc: psutil.Process) -> tuple[LatencyHistogram, int, list[int]]:
     perf = time.perf_counter_ns
     deadline = perf() + int(duration_s * 1e9)
     if concurrency == 1:
-        hist = LatencyHistogram()
+        hist, raw = LatencyHistogram(), []
+        keep = raw.append
         while perf() < deadline or hist.count < min_ops:
             t0 = perf()
             op()
-            hist.record(perf() - t0)
-        return hist, proc.num_threads()
+            d = perf() - t0
+            hist.record(d)
+            if hist.count <= EXACT_LIMIT:
+                keep(d)
+        return hist, proc.num_threads(), (raw if hist.count <= EXACT_LIMIT else [])
 
     hists = [LatencyHistogram() for _ in range(concurrency)]
     done = [0]
@@ -92,7 +108,7 @@ def _measure(op, duration_s: float, min_ops: int, concurrency: int, proc: psutil
     total = LatencyHistogram()
     for h in hists:
         total.merge(h)
-    return total, threads_max
+    return total, threads_max, []  # concurrent trials report histogram percentiles only
 
 
 def main(argv=None) -> int:
@@ -126,7 +142,8 @@ def main(argv=None) -> int:
     cpu0, ctx0 = proc.cpu_times(), proc.num_ctx_switches()
     start_iso, t0 = now_iso(), time.perf_counter()
     emit({"event": "measure_start", "ts": start_iso})
-    hist, threads_max = _measure(op, args.duration, min_ops, args.concurrency, proc)
+    hist, threads_max, raw = _measure(op, args.duration, min_ops, args.concurrency, proc)
+    exact = exact_percentiles(raw)
     wall = time.perf_counter() - t0
     end_iso = now_iso()
     cpu1, ctx1 = proc.cpu_times(), proc.num_ctx_switches()
@@ -146,7 +163,10 @@ def main(argv=None) -> int:
         "threads_max": threads_max,
         "ctx_switches": (ctx1.voluntary - ctx0.voluntary) + (ctx1.involuntary - ctx0.involuntary),
         "histogram": hist.to_dict(), "mean_ns": hist.sum_ns / ops if ops else None,
-        "p50_ns": hist.percentile(50), "p95_ns": hist.percentile(95), "p99_ns": hist.percentile(99),
+        "p50_ns": exact["p50_ns"] if exact else hist.percentile(50),
+        "p95_ns": exact["p95_ns"] if exact else hist.percentile(95),
+        "p99_ns": exact["p99_ns"] if exact else hist.percentile(99),
+        "exact_percentiles": exact, "percentile_method": "exact" if exact else "histogram (±6.25%)",
         "timer_overhead_ns": overhead,
         "measure_start": start_iso, "measure_end": end_iso, "env": fingerprint(),
     })

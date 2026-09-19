@@ -139,6 +139,16 @@ def test_three_variants_and_any_reference():
     assert len(r["scorecard"]) == 3
 
 
+def test_exact_percentiles_are_preferred_over_histogram_buckets():
+    ex = argon_trials()
+    for i, t in enumerate(ex):
+        t.exact_percentiles = {"p25_ns": 37_000_000, "p50_ns": 38_000_000 + i, "p75_ns": 39_000_000,
+                               "p95_ns": 41_000_000, "p99_ns": 42_000_000}
+    a = variant(compare(md5_trials() + ex, "md5"), "argon2id-rfc9106-low")["time_per_call"]
+    assert a["median_ns"] == 38_000_002 and a["p95_ns"] == 41_000_000 and a["percentile_method"] == "exact"
+    assert variant(compare(md5_trials() + argon_trials(), "md5"), "md5")["time_per_call"]["percentile_method"].startswith("histogram")
+
+
 def test_memory_per_op_uses_peak_minus_baseline():
     r = compare(md5_trials() + argon_trials(), reference_key="md5")
     mem = variant(r, "argon2id-rfc9106-low")["memory"]

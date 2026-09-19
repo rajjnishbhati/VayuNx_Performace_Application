@@ -31,6 +31,16 @@ def test_worker_fast_preset_reports_histogram_cpu_and_memory():
 def test_worker_slow_preset_respects_min_ops():
     r = run_worker("--preset", "argon2id-owasp", "--duration", "0.05", "--min-ops", "3", "--warmup", "0")[-1]
     assert r["ops"] >= 3 and r["histogram"]["count"] == r["ops"]
+    # few ops -> raw durations kept -> exact percentiles, within the observed range
+    assert r["percentile_method"] == "exact" and r["p50_ns"] == r["exact_percentiles"]["p50_ns"]
+    assert r["histogram"]["min_ns"] <= r["p50_ns"] <= r["histogram"]["max_ns"]
+
+
+def test_exact_percentiles_nearest_rank():
+    from vayunx_lab.worker import exact_percentiles
+    p = exact_percentiles(list(range(1, 101)))
+    assert (p["p25_ns"], p["p50_ns"], p["p75_ns"], p["p95_ns"], p["p99_ns"]) == (25, 50, 75, 95, 99)
+    assert exact_percentiles([]) is None
 
 
 def test_worker_rejects_unknown_preset():

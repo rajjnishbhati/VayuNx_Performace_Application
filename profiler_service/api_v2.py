@@ -191,7 +191,8 @@ def _lab_trials(session: Session, exp_id: str) -> list[TrialInput]:
                               cores_busy=tr.cores_busy, peak_rss_bytes=tr.peak_rss_bytes,
                               rss_before_bytes=tr.rss_before_bytes, noisy=bool(tr.noisy),
                               timer_overhead_ns=tr.timer_overhead_ns, concurrency=tr.concurrency,
-                              family=preset.family, security=security_note(preset)))
+                              family=preset.family, security=security_note(preset),
+                              exact_percentiles=json.loads(tr.result_json).get("exact_percentiles")))
     return out
 
 
