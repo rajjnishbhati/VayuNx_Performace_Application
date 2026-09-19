@@ -196,67 +196,111 @@ def _lab_trials(session: Session, exp_id: str) -> list[TrialInput]:
     return out
 
 
+MIN_CPU_SPAN_COVERAGE = 0.5  # per-call CPU is used only if CPU-timed spans cover at least half the calls
+
+
 def _op_key(attrs: dict, fallback: str) -> str:
-    """'login · hash' for crypto recorded inside a vayunx.span/measure named login, else 'hash'."""
-    op = attrs.get("crypto.operation") or fallback
+    """Crypto recorded inside vayunx.span/measure("login") -> "span:login" (every crypto call in that code
+    path, whatever its operation: MD5 recomputes a hash at login while Argon2id verifies); otherwise the
+    operation itself -> "op:hash"."""
     scope = attrs.get("vayunx.scope")
-    return f"{scope} · {op}" if scope else op
+    return f"span:{scope}" if scope else f"op:{attrs.get('crypto.operation') or fallback}"
 
 
-def _app_trials(session: Session, runs: list[Run]) -> tuple[list[TrialInput], str, list[str]]:
-    """Each app run is one trial of its variant (run.variant or run.label). Data is matched by operation:
-    crypto.operation attribute when present, else the op/span name (name-path fallback for spans), qualified
-    by the SDK's vayunx.scope (the enclosing span name) when there is one. Scoped operations the runs share
-    are preferred: they are the code path the user labelled, not incidental hashing elsewhere in the app."""
+def _label(key: str) -> str:
+    return key.split(":", 1)[1]
+
+
+def _median(xs: list[float]) -> float | None:
+    xs = sorted(xs)
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+def _part_name(attrs: dict, fallback: str) -> str:
+    return f"{attrs.get('crypto.operation') or fallback} {attrs.get('crypto.algorithm') or ''}".strip()
+
+
+def _app_trials(session: Session, runs: list[Run]) -> tuple[list[TrialInput], dict]:
+    """Each app run is one trial of its variant (run.variant or run.label).
+
+    Matching: crypto recorded inside a span the user named (SDK attribute vayunx.scope) is matched by that
+    name; other data by crypto.operation (or the op/span name). Named code paths shared by all runs win over
+    unscoped operations - they are what the user labelled, not incidental hashing elsewhere in the app.
+
+    CPU per call: the median `vayunx.cpu_time_ms` of the matching crypto spans (per-call thread CPU from the
+    SDK), used only when those spans cover at least half of the calls. Fast calls are not CPU-timed one by
+    one, so their CPU is reported as not measured - never derived from whole-process CPU, which includes
+    request handling. Memory per call is not measured for apps (process RSS growth is not per-call memory);
+    peak RSS is still reported."""
     per_run: dict[str, dict[str, dict]] = {}
+    cpu_ms: dict[str, dict[str, list[float]]] = {}
     for run in runs:
         ops: dict[str, dict] = {}
         for row in session.scalars(select(OpStat).where(OpStat.run_id == run.run_id)):
             attrs = json.loads(row.attributes_json)
-            key = _op_key(attrs, row.op_name)
-            entry = ops.setdefault(key, {"hist": LatencyHistogram(), "attrs": attrs})
-            entry["hist"].merge(LatencyHistogram.from_dict(json.loads(row.histogram_json)))
-        if not ops:  # fall back to cryptographic spans
-            for sp in session.scalars(select(Span).where(Span.run_id == run.run_id, Span.category == "cryptographic")):
+            entry = ops.setdefault(_op_key(attrs, row.op_name), {"hist": LatencyHistogram(), "parts": {}})
+            h = LatencyHistogram.from_dict(json.loads(row.histogram_json))
+            entry["hist"].merge(h)
+            part = entry["parts"].setdefault(_part_name(attrs, row.op_name), {"ns": 0, "attrs": attrs})
+            part["ns"] += h.sum_ns
+        spans = session.scalars(select(Span).where(Span.run_id == run.run_id, Span.category == "cryptographic")).all()
+        cpu_ms[run.run_id] = defaultdict(list)
+        for sp in spans:
+            attrs = json.loads(sp.attributes_json)
+            if isinstance(attrs.get("vayunx.cpu_time_ms"), (int, float)):
+                cpu_ms[run.run_id][_op_key(attrs, sp.span_name)].append(float(attrs["vayunx.cpu_time_ms"]))
+        if not ops:  # no op-stats (older SDKs): build histograms from cryptographic spans
+            for sp in spans:
                 attrs = json.loads(sp.attributes_json)
-                key = _op_key(attrs, sp.span_name)
-                entry = ops.setdefault(key, {"hist": LatencyHistogram(), "attrs": attrs})
+                entry = ops.setdefault(_op_key(attrs, sp.span_name), {"hist": LatencyHistogram(), "parts": {}})
                 entry["hist"].record(int(sp.duration_ms * 1e6))
+                part = entry["parts"].setdefault(_part_name(attrs, sp.span_name), {"ns": 0, "attrs": attrs})
+                part["ns"] += int(sp.duration_ms * 1e6)
         per_run[run.run_id] = ops
     common = set.intersection(*(set(o) for o in per_run.values())) if per_run else set()
     if not common:
         raise problem(409, "These runs have no crypto operation in common.",
-                      "Pick runs that record the same operation (the same crypto.operation or op/span name).")
-    scoped = {k for k in common if " · " in k}
+                      'Pick runs that record the same operation, or wrap the code path in vayunx.span("login") '
+                      "in every variant.")
+    scoped = {k for k in common if k.startswith("span:")}
     totals = {k: sum(per_run[r][k]["hist"].sum_ns for r in per_run) for k in (scoped or common)}
-    operation = max(totals, key=totals.get)
-    trials = []
+    key = max(totals, key=totals.get)
+    trials, detail = [], {}
     for i, run in enumerate(runs):
-        entry = per_run[run.run_id][operation]
-        attrs = entry["attrs"]
+        entry = per_run[run.run_id][key]
+        attrs = max(entry["parts"].values(), key=lambda part: part["ns"])["attrs"]
+        variant = run.variant or run.label
+        detail[variant] = sorted(entry["parts"], key=lambda k: -entry["parts"][k]["ns"])
         samples = session.scalars(select(Sample).where(Sample.run_id == run.run_id).order_by(Sample.timestamp)).all()
         by = defaultdict(list)
         for s in samples:
             by[s.metric_name].append(s)
         rss = [s.value for s in by.get("proc_peak_rss_mib", []) or by.get("proc_rss_mib", []) or by.get("memory_mb", [])]
-        first_rss = (by.get("proc_rss_mib") or by.get("memory_mb") or [None])[0]
         cores = [s.value for s in by.get("proc_cores_busy", []) if s.category == "cryptographic"] or \
                 [s.value / 100 for s in by.get("cpu_pct", [])]
-        cpu_t = by.get("proc_cpu_time_s", [])
         hist = entry["hist"]
+        cpu_list = cpu_ms[run.run_id].get(key, [])
+        covered = bool(hist.count) and len(cpu_list) >= MIN_CPU_SPAN_COVERAGE * hist.count
         other = [s.value for s in by.get("machine_other_cores_busy", []) if s.category == "cryptographic"]
         sec = note_for_algorithm(attrs.get("crypto.algorithm"), attrs.get("crypto.params"))
         trials.append(TrialInput(
-            variant_key=run.variant or run.label, variant_label=run.variant or run.label, trial_index=i,
-            histogram=hist.to_dict(),
-            cpu_s_per_op=((cpu_t[-1].value - cpu_t[0].value) / hist.count) if len(cpu_t) >= 2 and hist.count else None,
+            variant_key=variant, variant_label=variant, trial_index=i, histogram=hist.to_dict(),
+            cpu_s_per_op=_median(cpu_list) / 1000 if covered else None,
             cores_busy=sorted(cores)[len(cores) // 2] if cores else None,
-            peak_rss_bytes=int(max(rss) * 1024 * 1024) if rss else None,
-            rss_before_bytes=int(first_rss.value * 1024 * 1024) if first_rss is not None else None,
+            peak_rss_bytes=int(max(rss) * 1024 * 1024) if rss else None, rss_before_bytes=None,
             noisy=bool(other) and sorted(other)[len(other) // 2] > 0.5,
             family=("password-hash" if sec and sec["safe_for_passwords"] else "fast-hash" if sec else None),
             security=sec, peak_rss_approximate=True))
-    return trials, operation, sorted(common - {operation})
+    info = {"operation": _label(key), "operation_kind": "span" if key.startswith("span:") else "operation",
+            "operation_detail": detail, "other_operations": sorted(_label(k) for k in common - {key}),
+            "measurement_notes": [
+                "CPU per call comes from per-call thread CPU on crypto spans (calls at least slow_ms long); faster "
+                "calls are not CPU-timed one by one, so their CPU per call is shown as not measured.",
+                "Memory per call is not measured for apps; peak process memory is shown instead."]}
+    return trials, info
 
 
 @router.get("/compare")
@@ -287,14 +331,14 @@ def compare_v2(session: SessionDep, experiment_id: str | None = None, run_ids: s
     missing = [rid for rid, run in zip(ids, runs) if run is None]
     if missing:
         raise problem(404, f"Unknown run id(s): {', '.join(missing)}.", "Pick runs from GET /v2/runs.")
-    trials, operation, other_ops = _app_trials(session, runs)
+    trials, info = _app_trials(session, runs)
     ref = reference or trials[0].variant_key
     cores_total = cores or (json.loads(runs[0].metadata_json).get("cpu_count") or os.cpu_count() or 1)
     try:
         result = compare(trials, ref, rate_per_s=rate, cores_total=cores_total, source="app", op_noun="call")
     except ValueError as exc:
         raise problem(422, str(exc), "Select runs from at least two variants (different labels or VAYUNX_VARIANT).") from None
-    result.update(operation=operation, other_operations=other_ops, runs=runs_out_v2(session, runs))
+    result.update(info, runs=runs_out_v2(session, runs))
     return result
 
 

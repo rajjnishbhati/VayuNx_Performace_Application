@@ -158,9 +158,14 @@ def test_app_compare_prefers_the_scoped_operation_over_unrelated_hashing(live):
         run_ids.append(st["run_id"])
     status, cmp = call(f"{live}/v2/compare?run_ids={','.join(run_ids)}")
     assert status == 200, cmp
-    assert cmp["operation"] == "login · hash" and "hash" in cmp["other_operations"]
+    assert cmp["operation"] == "login" and cmp["operation_kind"] == "span" and "hash" in cmp["other_operations"]
+    assert cmp["operation_detail"] == {"md5": ["hash MD5"], "argon2id": ["hash Argon2id"]}
     assert [(v["security"]["algorithm"], v["security"]["safe_for_passwords"]) for v in cmp["variants"]] == \
         [("MD5", False), ("Argon2id", True)]
+    md5, argon = cmp["variants"]
+    # per-call CPU only where every call was CPU-timed (slow calls become spans); never process CPU / count
+    assert md5["cpu"]["cpu_s_per_op"] is None and 0 < argon["cpu"]["cpu_s_per_op"] < 1
+    assert argon["memory"]["mem_per_op_bytes"] is None and cmp["measurement_notes"]
 
 
 def test_unknown_experiment_is_a_friendly_404(live):

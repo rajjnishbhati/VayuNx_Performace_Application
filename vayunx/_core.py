@@ -86,6 +86,9 @@ class _State:
             attrs["crypto.input_bytes"] = input_bytes
         if c0:
             attrs[CPU_ATTR] = max(0.0, (thread_cpu_ns() - c0) / 1e6)
+        scope = SCOPE.get()
+        if scope is not None:
+            attrs["vayunx.scope"] = scope
         if _get_running_loop() is not None and ns >= self.slow_ns:
             self.findings["blocking_event_loop"] += 1
             attrs["vayunx.finding"] = "blocking_event_loop"

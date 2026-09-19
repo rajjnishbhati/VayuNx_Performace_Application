@@ -81,6 +81,7 @@ h2 { font-size: 17px; margin: 0 0 8px; font-weight: 650; }
 h3 { font-size: 15px; margin: 0 0 6px; font-weight: 650; }
 p { margin: 0 0 8px; }
 code, .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+.code-block { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre; max-width: 100%; }
 .muted { color: var(--muted); }
 .ink2 { color: var(--ink-2); }
 .num { font-variant-numeric: tabular-nums; }

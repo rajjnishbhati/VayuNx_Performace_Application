@@ -102,7 +102,14 @@ function AppView({ r, colors }: { r: CompareResult; colors: Record<string, strin
         </div>
       )}
       {r.source === "app" && r.operation && (
-        <p className="muted" style={{ fontSize: 12 }}>Operation compared: <code>{r.operation}</code>{r.other_operations?.length ? ` (also recorded: ${r.other_operations.join(", ")})` : ""}.</p>
+        <div className="muted" style={{ fontSize: 12 }}>
+          <p style={{ margin: "4px 0" }}>
+            {r.operation_kind === "span" ? <>Compared: the crypto calls inside <code>{r.operation}</code></> : <>Operation compared: <code>{r.operation}</code></>}
+            {r.operation_detail && <> ({Object.entries(r.operation_detail).map(([k, parts]) => `${k}: ${parts.join(" + ")}`).join("; ")})</>}
+            {r.other_operations?.length ? `. Also recorded: ${r.other_operations.join(", ")}` : ""}.
+          </p>
+          {r.measurement_notes?.map((n) => <p key={n} style={{ margin: "4px 0" }}>{n}</p>)}
+        </div>
       )}
     </div>
   );

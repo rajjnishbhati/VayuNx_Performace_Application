@@ -141,7 +141,12 @@ export type CompareResult = {
   method: Record<string, string>;
   experiment?: Experiment;
   operation?: string;
+  /** "span": every crypto call inside the app's span of that name; "operation": one crypto.operation */
+  operation_kind?: "span" | "operation";
+  /** per variant: what that code path actually ran, largest time first, e.g. ["verify Argon2id"] */
+  operation_detail?: Record<string, string[]>;
   other_operations?: string[];
+  measurement_notes?: string[];
   runs?: RunItem[];
 };
 

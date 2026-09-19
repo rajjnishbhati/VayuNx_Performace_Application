@@ -23,9 +23,14 @@ export default function AppRunsPicker({ onCompare }: { onCompare: (runIds: strin
       <div className="card">
         <h2>No app runs yet</h2>
         <p className="ink2">
-          Instrument your app with the Python SDK (<code>run.op()</code> around crypto calls, with <code>crypto.operation</code> and{" "}
-          <code>crypto.algorithm</code> attributes), run it once per variant, and the runs appear here. Automatic hooks and the
-          Next.js SDK arrive in Phase 3.
+          Run your app once per variant under the profiler and the runs appear here - no code changes needed:
+        </p>
+        <pre className="code-block">{`VAYUNX_VARIANT=md5      vayunx-run -- python -m uvicorn app:app
+VAYUNX_VARIANT=argon2id vayunx-run -- python -m uvicorn app:app
+# Node / Next.js: vayunx-node run -- node server.js, or register() in instrumentation.ts`}</pre>
+        <p className="ink2">
+          Wrapping the code path in <code>vayunx.span(&quot;login&quot;)</code> lets the comparison match exactly that work
+          across variants. See <code>examples/</code> for a FastAPI and a Next.js login app.
         </p>
       </div>
     );

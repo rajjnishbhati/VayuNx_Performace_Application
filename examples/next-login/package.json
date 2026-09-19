@@ -1,0 +1,22 @@
+{
+  "name": "vayunx-next-login-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VAYUNX example: a Next.js login API whose password hashing is chosen by VAYUNX_VARIANT (md5 | argon2id).",
+  "scripts": {
+    "build": "next build",
+    "start": "next start -p 8102 -H 127.0.0.1"
+  },
+  "dependencies": {
+    "@vayunx/profiler": "file:../../sdk-node",
+    "argon2": "0.45.1",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "@types/react": "^19",
+    "typescript": "5.9.3"
+  }
+}

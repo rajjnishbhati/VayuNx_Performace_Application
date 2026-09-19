@@ -105,6 +105,8 @@ export class State {
     if (c.params) attrs["crypto.params"] = c.params;
     if (c.inputBytes !== undefined) attrs["crypto.input_bytes"] = c.inputBytes;
     if (cpuMs !== undefined) attrs["vayunx.cpu_time_ms"] = cpuMs;
+    const scope = (parent ?? context.active()).getValue(SCOPE_KEY);
+    if (scope !== undefined) attrs["vayunx.scope"] = String(scope);
     if (c.sync && ms >= this.cfg.slowMs) {
       // every synchronous call runs on this thread's event loop: nothing else is served meanwhile
       this.findings.blocking_event_loop++;
