@@ -12,6 +12,13 @@ const ROW_H = 52;
 const M = { top: 10, right: 84, bottom: 40, left: 250 };
 const LABEL_CHARS = 30;
 
+/** Cut in the middle: the end often carries what tells variants apart ("· Node.js", a cost). */
+function shorten(label: string): string {
+  if (label.length <= LABEL_CHARS) return label;
+  const tail = Math.floor((LABEL_CHARS - 1) / 2);
+  return `${label.slice(0, LABEL_CHARS - 1 - tail)}…${label.slice(label.length - tail)}`;
+}
+
 /** Decade ticks read as whole numbers: "1 µs", "10 µs", "100 µs" (not "10.0 µs"). */
 function tickLabel(ns: number): string {
   return fmtNs(ns).replace(/\.0+ /, " ");
@@ -75,7 +82,7 @@ export default function DotPlot({ variants, colors }: { variants: Variant[]; col
                     fill={hover?.key === v.key ? "var(--surface-2)" : "transparent"} rx={6} />
               <circle cx={14} cy={cy} r={6} fill={c} />
               <text x={28} y={cy - 2} fontSize={14} fill="var(--ink)">
-                {v.label.length > LABEL_CHARS ? `${v.label.slice(0, LABEL_CHARS - 1)}…` : v.label}
+                {shorten(v.label)}
                 {v.label.length > LABEL_CHARS && <title>{v.label}</title>}
               </text>
               <text x={28} y={cy + 14} fontSize={12} fill="var(--muted)">{v.is_reference ? "reference" : `${v.trials} trials`}</text>

@@ -22,6 +22,9 @@ export default function AlgorithmsPage() {
             <table className="data">
               <thead><tr><th scope="col">Preset</th><th scope="col">Parameters</th><th scope="col">Library (Python)</th><th scope="col">Node.js</th><th scope="col">Passwords</th><th scope="col">Security note</th></tr></thead>
               <tbody>
+                {!presets && [0, 1, 2].map((i) => (
+                  <tr key={i}><td colSpan={6}><div className="skeleton" style={{ height: 18 }} aria-hidden /></td></tr>
+                ))}
                 {presets?.map((p) => (
                   <tr key={p.id}>
                     <th scope="row" style={{ fontWeight: 500 }}>{p.label}<div className="muted mono">{p.id}</div></th>

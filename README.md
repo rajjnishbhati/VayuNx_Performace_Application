@@ -153,12 +153,12 @@ The noisy/quiet decision uses **cumulative counters** instead: (machine busy CPU
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /v2/presets` | Built-in presets with their security notes |
+| `GET /v2/presets` | Built-in presets with their security notes and Node.js availability |
 | `POST /v2/lab/runs` | Start a Lab experiment. One at a time; returns 409 while another is running. |
 | `GET /v2/experiments[/{id}]` | Experiment list, or one experiment with progress and ETA |
 | `POST /v2/experiments/{id}/cancel` | Cancel a queued or running experiment |
 | `GET /v2/experiments/{id}/timeseries` | Machine data, with shaded "crypto ran here" regions |
-| `GET /v2/compare?experiment_id=` or `?run_ids=a,b` | Compare a Lab experiment, or app runs matched by `crypto.operation` |
+| `GET /v2/compare?experiment_id=` or `?run_ids=a,b` | Compare a Lab experiment, or app runs (matched by span name, else `crypto.operation`; see Phase 3) |
 | `GET /v2/runs` | Run search with filters and pagination |
 
 Errors are `{"detail": {"error", "fix"}}`. Every `/v1` endpoint is unchanged.
@@ -182,6 +182,157 @@ Run: 5 interleaved trials × 10 s per algorithm, started from the UI; 121 s tota
 - **Estimate at 100 logins/s:** about 19 cores (233 % of this 8-thread machine) and 359 MiB RAM in flight.
 - **Earlier runs on the same machine** gave Argon2id medians of 56.6 ms and 61.2 ms. Numbers vary between runs, and a different machine will differ more.
 
+## Profile your own app: SDKs on OpenTelemetry (Phase 3)
+
+Phase 3 answers the same question for a **real application**: run it once with MD5 and once with
+Argon2id, and see what the switch costs in that app, under "My app" on the compare screen.
+
+### Python: no code changes
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[otel]"        # the `vayunx` package and the vayunx-run launcher
+$env:VAYUNX_VARIANT="md5";      .\.venv\Scripts\vayunx-run.exe -- python -m uvicorn app:app
+$env:VAYUNX_VARIANT="argon2id"; .\.venv\Scripts\vayunx-run.exe -- python -m uvicorn app:app
+```
+
+`vayunx-run` (or `python -m vayunx run -- <cmd>`) puts a bootstrap `sitecustomize` on `PYTHONPATH`, so hooks
+are installed before the app imports anything (even `from hashlib import md5` is captured). An existing
+`sitecustomize` still runs. Or call it yourself, as early as possible:
+
+```python
+import vayunx
+vayunx.init(service="my-api", variant="md5")      # endpoint defaults to http://127.0.0.1:8010
+
+@vayunx.measure("login")                          # optional: label a code path (see "Matching" below)
+def login(...): ...
+
+with vayunx.span("checkout"): ...
+vayunx.status()                                   # hooks, findings, counters
+```
+
+**Hooked (Python):** `hashlib` constructors, `new`, `pbkdf2_hmac`, `scrypt`; `hmac.new/digest`;
+`bcrypt.hashpw/checkpw/kdf`; argon2-cffi `PasswordHasher.hash/verify` and `low_level`; passlib
+`CryptContext.hash/verify`; PyNaCl `pwhash` and Ed25519 signing; PyJWT `encode/decode`; cryptography
+`Fernet`, `PBKDF2HMAC.derive`, `Scrypt.derive`, `AESGCM`, `ChaCha20Poly1305`. Libraries imported later are
+hooked on import. A hooked call made inside another (SHA-256 inside HMAC, PBKDF2 inside passlib) is
+recorded once, as the outer call. cryptography's Rust KDF objects expose no parameters, so those calls are
+reported as `PBKDF2-HMAC` / `scrypt` without them.
+
+### Node.js and Next.js
+
+See [`sdk-node/README.md`](sdk-node/README.md): `node --require @vayunx/profiler/register app.js`,
+`vayunx-node run -- <cmd>`, or `registerVayunx()` in a Next.js `instrumentation.ts` (plus an Edge light
+mode). It hooks `node:crypto` (including ESM named imports and WebCrypto) and bcrypt, bcryptjs, argon2 and
+jsonwebtoken loaded through CommonJS.
+
+**Shared configuration** (both SDKs): `VAYUNX_ENDPOINT`, `VAYUNX_SERVICE`, `VAYUNX_VARIANT`,
+`VAYUNX_RUN_ID` (32 hex), `VAYUNX_PHASE`, `VAYUNX_SLOW_MS` (default 1), export interval
+(`VAYUNX_EXPORT_INTERVAL_S` / `_MS`, default 5 s), `VAYUNX_GAUGES=0`, `VAYUNX_HOOKS=0`, `VAYUNX_DISABLE=1`.
+
+### What is recorded
+
+| Signal | How | Sent as |
+|---|---|---|
+| Every hooked call | Latency into an in-process `log2x8-ns` histogram per (operation, algorithm, parameters, library, scope) | OTLP metric `vayunx.crypto.duration`: explicit-bucket histogram, delta, bucket bounds equal to ours, so nothing is lost |
+| Calls ≥ `slow_ms` | An OpenTelemetry span: `crypto.operation/algorithm/params/library/input_bytes/sync`, per-call thread CPU `vayunx.cpu_time_ms` where measurable, `vayunx.scope` | OTLP traces |
+| Process and machine, every 1 s | Cores busy, CPU time, RSS, peak RSS, machine CPU, other cores busy, available memory; Node.js also event-loop delay p99, event-loop utilisation and threadpool wait (a 1-byte `randomFill` probe) | OTLP metrics (gauges), tagged `cryptographic` while crypto ran in the last 50 ms |
+
+Why our own histograms rather than the OTel metrics SDK: one OTel Python `Histogram.record()` costs about
+6.5 µs on this machine, about 9× an MD5 call. The shipped format is still standard OTLP.
+
+**Findings:**
+- `blocking_event_loop`: a slow synchronous crypto call on a thread that is running an asyncio loop
+  (Python), or any slow synchronous crypto call (Node.js).
+- `threadpool_queue` (Node.js): an async threadpool crypto call started while `UV_THREADPOOL_SIZE` of ours
+  were already running.
+
+**Safety (spec A)** is the same contract as the v1 SDK: never raise into the host, never mask its
+exceptions, no network I/O on its threads, bounded memory (drops are counted), bounded shutdown
+(`shutdown(timeout)`), quiet when the Service is down, and only sizes, parameters and timings are
+recorded. Describers read public cost fields only (bcrypt cost digits, the `m=,t=,p=` field of a PHC
+string) and the receiver scrubs attributes again. `shutdown()` restores every patched function.
+
+**CPU time on Windows:** `thread_time()` there is `GetThreadTimes`, which advances only on the 15.6 ms
+scheduler tick: an 8.7 ms PBKDF2 call measured 0.0 ms. The Python SDK uses `QueryThreadCycleTime`,
+calibrated once against `perf_counter` (2.496 cycles/ns on the i5-8400H, matching its 2.5 GHz TSC).
+
+**Measured overhead** (i5-8400H, Windows 11; from the tests):
+
+| Call | Overhead per call |
+|---|---|
+| Python `hashlib.md5(pw).digest()` | 1.0–1.2 µs (the call itself: 0.84 µs; minimum over 15 interleaved rounds) |
+| Node.js `createHash('md5').update(pw).digest()` | 0.7–0.8 µs |
+| Slow calls (password hashes, KDFs) | adds two ~1.4 µs cycle-counter reads (Python, Windows) and one span |
+
+### OTLP receiver
+
+`POST /v1/traces` and `POST /v1/metrics` accept OTLP/HTTP protobuf or JSON, optionally gzipped, up to 16 MiB.
+- **Resource attributes → run:** `service.name`, `vayunx.variant`, `vayunx.run_id`, `vayunx.phase`.
+- **Spans with `crypto.*` →** category `cryptographic`.
+- **`vayunx.crypto.duration` →** op-stats. Delta points add up; a cumulative point replaces its series.
+- **`vayunx.process.*`, `vayunx.machine.*`, `vayunx.node.*` gauges →** samples.
+
+Any OpenTelemetry SDK can send to it.
+
+### Matching app runs ("My app")
+
+- Crypto recorded inside a span the app named (`vayunx.span("login")`) is matched **by that name**. Every
+  crypto call in the code path counts, whatever its operation: MD5 re-hashes at login, while Argon2id verifies.
+- Named code paths shared by all runs win over unscoped operations, so incidental hashing elsewhere in the
+  app (ETags, caches) does not decide what is compared.
+- **CPU per call** comes only from per-call CPU-timed spans that cover at least half of the calls. It is
+  never whole-process CPU divided by the call count, which would count request handling as crypto.
+- **Memory per call** is not measured for apps; peak process memory is shown instead.
+- The response says what each variant ran (`operation_detail`) and states these rules (`measurement_notes`).
+
+### Example apps
+
+[`examples/`](examples/README.md) has a FastAPI and a Next.js login service. Each switches MD5 → Argon2id
+through `VAYUNX_VARIANT`. `examples/run_demo.py fastapi|next` runs both variants under load and prints the
+**My app** link.
+
+**Measured on this machine** (same machine as below; 4 concurrent clients on the same machine, 20 s per
+variant, 50 users; service on :8010):
+
+| App | Variant | Logins/s (client) | Client p50 | Crypto inside `login` (median) | CPU per call | Cores at 100 logins/s |
+|---|---|---|---|---|---|---|
+| FastAPI | md5 | 676.7 | 5.26 ms | hash MD5: 5.89 µs | not measured (fast calls) | – |
+| FastAPI | argon2id | 55.0 | 68.85 ms | verify Argon2id: 65.0 ms | 60.6 ms | about 6.1 |
+| Next.js | md5 | 541.1 | 6.99 ms | hash MD5: 10.8 µs | not measured (fast calls) | – |
+| Next.js | argon2id | 60.5 | 63.84 ms | verify Argon2id: 60.8 ms | not measured (async, threadpool) | – |
+
+- In the apps, MD5 takes 5.9–10.8 µs per call against about 1 µs in the Lab. The in-app time includes
+  contention: 4 request threads share the GIL in Python and the event loop in Node.js.
+- Argon2id in FastAPI used 60.6 ms of thread CPU per verify, against 32.5 ms per hash in the Lab
+  (single worker). Four verifies ran at once on 4 cores / 8 hardware threads.
+- Every run is flagged `few_trials` (one run per variant) and `noisy_machine`: the load generator ran on the
+  same machine.
+
+### Node.js Lab runner
+
+Every preset also runs in Node.js as `<preset>@node`. It has the same parameters, synthetic password and
+per-operation salt, and uses the same protocol and histogram (`vayunx_lab/node/worker.mjs`): `node:crypto`,
+including the built-in `argon2Sync` (Node.js ≥ 24.7), and the bcrypt npm package. Node.js variants run with
+concurrency 1. The runner reads their thread count and context switches with psutil, because libuv reports
+no context switches on Windows. `GET /v2/presets` reports, per preset, whether this machine's Node.js can
+run it; the UI shows a Node.js chip row and a **▶ Argon2id: Python vs Node.js** quick pick.
+
+**Measured on this machine** (i5-8400H, Windows 11 Pro 10.0.26200; Python 3.13.9 with argon2-cffi 25.1.0
+and OpenSSL 3.5.6; Node.js 24.15.0 with OpenSSL 3.5.5). Argon2id at the OWASP minimum (m = 19 MiB, t = 2,
+p = 1), 5 interleaved trials × 10 s each, started as the quick pick does:
+
+| Runtime | Time per hash (median) | Trial medians | p95 | CPU per hash | Peak RSS |
+|---|---|---|---|---|---|
+| Python, argon2-cffi | 31.8 ms | 30.9–32.1 ms | 39.5 ms | 32.5 ms | 52.4 MiB |
+| Node.js, `crypto.argon2Sync` | 71.4 ms | 70.2–76.8 ms | 93.4 ms | 72.7 ms | 63.7 MiB |
+
+- **Result:** Node.js was 2.2× slower per hash and used 2.2× more CPU. The trial ranges do not overlap, so
+  the difference is significant.
+- **Why:** not measured here. Both run on one core, so the difference is in the implementations
+  (libargon2 in argon2-cffi against OpenSSL's Argon2 KDF).
+- **Weak data:** all 10 trials were flagged noisy (other work above 0.5 cores; see item 10). The desktop
+  was in normal use.
+
 ## Layout
 
 ```
@@ -191,6 +342,13 @@ vayunx_profiler_sdk/    Part 2  client.py (runs + spans), sampling.py (psutil th
 demos/                  Part 4  crypto_baseline.py (MD5), crypto_remediated.py (Argon2id),
                                 general_file_read.py (general category), run_demo.py (orchestrator)
 tests/                          test_comparison.py (pure logic), test_service_e2e.py (live server + SDK)
+vayunx/                 Phase 3 Python SDK on OpenTelemetry: _hooks.py (automatic hooks), _core.py (init/span/measure),
+                                _ship.py (OTLP histograms), _otel.py (spans, gauges), __main__.py + _bootstrap/ (vayunx-run)
+sdk-node/               Phase 3 Node.js / Next.js SDK (@vayunx/profiler, private): src/hooks.ts, core.ts, next.ts, edge.ts, cli.ts
+vayunx_lab/node/        Phase 3 Node.js Lab worker (worker.mjs); vayunx_lab/node_runtime.py finds Node.js
+profiler_service/otlp.py        Phase 3 OTLP/HTTP receiver (/v1/traces, /v1/metrics)
+examples/               Phase 3 FastAPI and Next.js login apps, loadgen.py, run_demo.py
+web/                    Phase 2 UI (Next.js); scripts/dod-check.mjs, scripts/phase3-check.mjs (browser checks)
 ```
 
 ## MVP demo scenario
@@ -343,7 +501,9 @@ The `flame_graph` trees are in d3-flame-graph's `{name, value, children}` shape,
 - **CPU:** shown as **cores busy** = CPU % ÷ 100, because psutil's CPU % is a share of **one** core.
 - **Neutral words:** "slower" and "more" are descriptions, not verdicts. For password hashing, slower is the point.
 
-## Python SDK
+## Python SDK (v1, manual)
+
+> For automatic hooks with no code changes, use the Phase 3 `vayunx` package instead (see above).
 
 ```python
 from vayunx_profiler_sdk import ProfilerClient
@@ -462,10 +622,12 @@ For primitives that take about a microsecond, use `run.op()`: a span costs many 
 ## Explicit non-goals (not implemented)
 
 - **Statistical call-stack sampling** (`py-spy` / `async-profiler` style).
-- **Non-Python SDKs.** The wire protocol is kept language-agnostic so one can be added later.
 - **Integration** with `vayunx-perf-demo`, real VAYUNX, CryptoSPM or Abhed code.
 - **Production hardening:** auth, multi-tenancy, deployment.
-- **Automatic / zero-code instrumentation.**
+
+Phase 3 delivered what used to be listed here as "Non-Python SDKs" and "automatic / zero-code
+instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phase-3)). The v1
+`vayunx_profiler_sdk` is still manual-only.
 
 ## REVIEW NEEDED (open items: deliberately not resolved here)
 
@@ -502,3 +664,37 @@ For primitives that take about a microsecond, use `run.op()`: a span costs many 
 10. **Noise-check residual.** Even measured from cumulative counters, "other cores busy" reads about 0.2 cores higher during heavy multi-threaded variants on Windows: Argon2id at p=4 read 0.30–0.52 against MD5's 0.10–0.23 in the same quiet session. This is likely CPU accounting granularity, but that is not proven, and it pushes borderline heavy trials over the 0.5-core threshold. The threshold and method need review, ideally on Linux and macOS too.
 11. **Untested platforms.** The Lab, sampler and UI were built and verified on Windows 11 only. The macOS paths (`ru_maxrss` in bytes, `sysctl` CPU model) and the Linux paths (`ru_maxrss` in KiB, `/proc/cpuinfo`) are written and unit-tested for units, but have not been run on those systems.
 12. **Security references need re-checking** against the OWASP cheat sheet before shipping (spec G, checked 2026-09-19). Security notes for app data are best-effort by algorithm name, and their parameters are not checked.
+13. **More new labels to reconcile with VAYUNX's taxonomy (Phase 3).** These are finding *kinds* and view
+    labels. None carries a severity (Critical/High/Medium/Low) or a verdict (MATCH/PARTIAL/MISSING):
+    - findings `blocking_event_loop` and `threadpool_queue`
+    - `operation_kind` (`span` / `operation`)
+    - "not measured" (CPU or memory per call)
+    - runtime labels `Python` / `Node.js`
+
+    Decide whether findings map to severities before they feed VAYUNX findings.
+14. **Package names (decision D3).** `vayunx` (Python) and `@vayunx/profiler` (npm) are provisional. The npm
+    package is `private`, and nothing has been published. The Python SDK ships in the same distribution as
+    the Service (`vayunx-profiler` 0.3.0).
+15. **Own histograms instead of OTel metrics for the fast path.** Standard OTLP on the wire, but not
+    recorded through the OTel metrics API (cost; see Phase 3). Confirm this is acceptable for teams that
+    expect OTel instruments.
+16. **The Node.js SDK registers the global TracerProvider** when none exists, so Next.js framework spans
+    (several per request) go to the Service. At high request rates the BatchSpanProcessor drops spans beyond
+    its 2,048-span queue: one MD5 run kept 4,980 `login` spans for 13,539 logins. Histograms are complete;
+    span lists are not. Confirm, or add sampling.
+17. **App capacity is often blank.** It needs per-call CPU, which exists only for slow synchronous or
+    threadpool-free calls that became spans. Async Node.js crypto and fast hashes show "not measured". The
+    Lab remains the source for capacity numbers.
+18. **Wire-format / API additions (Phase 3), to confirm alongside item 8:**
+    - OTLP receiver endpoints
+    - resource attributes `vayunx.run_id`, `vayunx.variant`, `vayunx.phase`, `vayunx.runtime`
+    - span attributes `crypto.sync`, `vayunx.cpu_time_ms`, `vayunx.process_cpu_ms`, `vayunx.scope`,
+      `vayunx.finding`
+    - `<preset>@node` variant ids, and the `node` field in `GET /v2/presets`
+    - compare fields `operation_kind`, `operation_detail`, `measurement_notes`
+19. **Argon2id across runtimes.** Node.js `crypto.argon2Sync` took 2.2× the time and CPU of argon2-cffi
+    at the same parameters here. The cause (implementation, build flags) is not investigated, and this is one
+    noisy experiment on one machine.
+20. **Phase 3 is verified on Windows only**, like item 11. The Next.js Edge light mode is built and type-checked
+    but was not run in an Edge runtime.
+
