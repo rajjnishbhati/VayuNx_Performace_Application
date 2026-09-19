@@ -11,6 +11,7 @@ const NAV = [
   { href: "/", label: "Compare" },
   { href: "/runs", label: "Runs" },
   { href: "/algorithms", label: "Algorithms" },
+  { href: "/inventory", label: "Inventory" },
   { href: "/settings", label: "Settings" },
 ];
 

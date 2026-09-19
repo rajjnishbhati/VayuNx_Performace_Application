@@ -201,3 +201,14 @@ export type ShareItem = {
   share_id: string; project_id: string; created_at: string; expires_at: string; revoked: boolean; views: number;
   target: { experiment_id: string | null; run_ids: string[] | null; reference: string | null };
 };
+
+export type InventoryItem = {
+  key: string; operation: string; algorithm: string; params: string | null; library: string | null; runtime: string;
+  calls: number; runs: number; variants: string[]; scopes: string[]; projects: string[]; first_seen: string; last_seen: string;
+  safe_for_passwords: boolean | null; meets_owasp_minimum: boolean | null; owasp_note: string; security_summary: string | null;
+};
+
+export type Inventory = {
+  generated_at: string; note: string;
+  apps: { service: string; algorithms: InventoryItem[]; summary: { algorithms: number; not_for_passwords: number; below_owasp_minimum: number } }[];
+};

@@ -1,5 +1,5 @@
 // Typed client for the Profiler Service. Requests go to /api/*, which next.config.ts rewrites to the service.
-import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, ProjectItem, RetentionReport, RunItem, ShareItem, TeamItem, Timeseries } from "./types";
+import type { ApiTokenItem, CompareResult, Experiment, Inventory, Me, Page, Preset, ProjectItem, RetentionReport, RunItem, ShareItem, TeamItem, Timeseries } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public fix: string) {
@@ -90,6 +90,7 @@ export const api = {
     request<ShareItem & { url: string }>("/v2/shares", json("POST", body)),
   shared: (token: string) => request<CompareResult & { shared: { expires_at: string; created_at: string } }>(`/v2/shared/${encodeURIComponent(token)}`),
   sharedTimeseries: (token: string) => request<Timeseries>(`/v2/shared/${encodeURIComponent(token)}/timeseries`),
+  inventory: () => request<Inventory>(`/v2/inventory${withProject("")}`),
   teams: () => request<TeamItem[]>("/v2/teams"),
   createTeam: (name: string) => request<TeamItem>("/v2/teams", json("POST", { name })),
   addMember: (teamId: string, email: string) => request<unknown>(`/v2/teams/${encodeURIComponent(teamId)}/members`, json("POST", { email })),

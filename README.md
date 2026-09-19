@@ -173,6 +173,26 @@ A GitHub Actions step, after the job has run the app under load with `vayunx-run
   run: vayunx-gate --service login-api --variant "$GITHUB_SHA" --rule "login p95 < 250ms" --junit gate.xml
 ```
 
+**Crypto inventory (Phase 4).** **Inventory** in the UI (`GET /v2/inventory`, `/v2/inventory.csv`) lists, per app,
+every algorithm the SDKs saw it use. Each entry shows:
+- the operation, parameters, library and runtime;
+- the code paths it ran in (`login`, `register`, ...);
+- calls, runs and variants, with first and last seen;
+- whether it is fit for password storage.
+
+It uses measured app runs only; Lab benchmarks are excluded, and an algorithm an app has but never ran is
+not listed. Password hashes are now checked against the OWASP minimums when their parameters were recorded:
+- Argon2id: m=19456 KiB with t=2, or the equivalents 47104/1, 12288/3, 9216/4, 7168/5;
+- bcrypt: cost 10;
+- PBKDF2-HMAC-SHA256: 600,000 iterations;
+- scrypt: N=2^17, r=8, p=1.
+
+The same check now fills the security note of app comparisons. Each entry has a stable `key`
+(`service|operation|algorithm|params`) for linking to the VAYUNX crypto inventory; that link itself is not built.
+
+On this machine the two example apps list MD5 (Not for passwords) and Argon2id at m=19456, t=2, p=1 (Meets
+OWASP minimum), in `login` and `register`.
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -780,7 +800,7 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
    Reconcile them before the compare output feeds VAYUNX findings.
 10. **Noise-check residual.** Even measured from cumulative counters, "other cores busy" reads about 0.2 cores higher during heavy multi-threaded variants on Windows: Argon2id at p=4 read 0.30–0.52 against MD5's 0.10–0.23 in the same quiet session. This is likely CPU accounting granularity, but that is not proven, and it pushes borderline heavy trials over the 0.5-core threshold. The threshold and method need review, ideally on Linux and macOS too.
 11. **Untested platforms.** The Lab, sampler and UI were built and verified on Windows 11 only. The macOS paths (`ru_maxrss` in bytes, `sysctl` CPU model) and the Linux paths (`ru_maxrss` in KiB, `/proc/cpuinfo`) are written and unit-tested for units, but have not been run on those systems.
-12. **Security references need re-checking** against the OWASP cheat sheet before shipping (spec G, checked 2026-09-19). Security notes for app data are best-effort by algorithm name, and their parameters are not checked.
+12. **Security references need re-checking** against the OWASP cheat sheet before shipping (spec G, checked 2026-09-19). Since Phase 4, app data's password-hash parameters are checked against those minimums when recorded; PBKDF2 with other hashes, passlib schemes and unknown algorithms stay "not checked".
 13. **More new labels to reconcile with VAYUNX's taxonomy (Phase 3).** These are finding *kinds* and view
     labels. None carries a severity (Critical/High/Medium/Low) or a verdict (MATCH/PARTIAL/MISSING):
     - findings `blocking_event_loop` and `threadpool_queue`
@@ -836,4 +856,7 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
     - p95/p99 of large runs come from the histogram (±6.25 %), so a result within that distance of the limit
       could go either way (such results are marked);
     - "no data" fails the build (exit 3) rather than passing it.
+26. **Inventory scope and wording.** The inventory only knows what ran while profiled. The status labels "Not for
+    passwords", "Below OWASP minimum", "Meets OWASP minimum" and "Not checked" are new next to VAYUNX's scales.
+    The link to the existing VAYUNX / CryptoSPM inventory (decision option b) needs that system's API or format.
 
