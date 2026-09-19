@@ -47,6 +47,16 @@ def read_peak_rss(proc: psutil.Process) -> tuple[int, str]:
     return peak_rss_bytes_from_rusage(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, sys.platform), "resource.ru_maxrss"
 
 
+def timer_overhead_ns(iterations: int = 20_000) -> float:
+    """Median cost the timing loop adds to every measured operation (two clock reads + a call)."""
+    perf, noop, h = time.perf_counter_ns, (lambda: None), LatencyHistogram()
+    for _ in range(iterations):
+        t0 = perf()
+        noop()
+        h.record(perf() - t0)
+    return float(h.percentile(50))
+
+
 def _measure(op, duration_s: float, min_ops: int, concurrency: int, proc: psutil.Process) -> tuple[LatencyHistogram, int]:
     perf = time.perf_counter_ns
     deadline = perf() + int(duration_s * 1e9)
@@ -107,6 +117,7 @@ def main(argv=None) -> int:
 
     proc = psutil.Process()
     op = preset.make_op()
+    overhead = timer_overhead_ns()
     rss_before = proc.memory_info().rss
     emit({"event": "ready", "pid": proc.pid, "preset": preset.id, "ts": now_iso()})
 
@@ -138,6 +149,7 @@ def main(argv=None) -> int:
         "ctx_switches": (ctx1.voluntary - ctx0.voluntary) + (ctx1.involuntary - ctx0.involuntary),
         "histogram": hist.to_dict(), "mean_ns": hist.sum_ns / ops if ops else None,
         "p50_ns": hist.percentile(50), "p95_ns": hist.percentile(95), "p99_ns": hist.percentile(99),
+        "timer_overhead_ns": overhead,
         "measure_start": start_iso, "measure_end": end_iso, "env": fingerprint(),
     })
     return 0

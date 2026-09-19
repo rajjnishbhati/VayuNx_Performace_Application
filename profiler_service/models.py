@@ -22,6 +22,65 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)  # UTC
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # UTC
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    # v2 (Phase 2). phase stays for v1: a Lab reference variant is stored as "baseline", candidates as "remediated".
+    variant: Mapped[str | None] = mapped_column(String(256), nullable=True)  # e.g. "Argon2id m=64 MiB t=3 p=4"
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    trial_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(8), default="app", server_default="app")  # "lab" | "app"
+    env_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # environment fingerprint
+
+
+class Experiment(Base):
+    """A set of runs compared together: Lab trials of several variants, or selected app runs."""
+
+    __tablename__ = "experiments"
+
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source: Mapped[str] = mapped_column(String(8))  # "lab" | "app"
+    label: Mapped[str] = mapped_column(String(256))
+    status: Mapped[str] = mapped_column(String(16))  # queued | running | complete | failed | cancelled
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    reference_preset: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    current_json: Mapped[str] = mapped_column(Text, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    env_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TrialResult(Base):
+    """Summary of one Lab trial (one fresh worker subprocess). One row per Lab run."""
+
+    __tablename__ = "trial_results"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), index=True)
+    preset_id: Mapped[str] = mapped_column(String(64))
+    trial_index: Mapped[int] = mapped_column(Integer)
+    concurrency: Mapped[int] = mapped_column(Integer)
+    ops: Mapped[int] = mapped_column(BigInteger)
+    wall_s: Mapped[float] = mapped_column(Float)
+    ops_per_s: Mapped[float] = mapped_column(Float)
+    cpu_user_s: Mapped[float] = mapped_column(Float)
+    cpu_system_s: Mapped[float] = mapped_column(Float)
+    cpu_s_per_op: Mapped[float] = mapped_column(Float)
+    cores_busy: Mapped[float] = mapped_column(Float)
+    rss_before_bytes: Mapped[int] = mapped_column(BigInteger)
+    peak_rss_bytes: Mapped[int] = mapped_column(BigInteger)
+    peak_rss_method: Mapped[str] = mapped_column(String(32))
+    threads_max: Mapped[int] = mapped_column(Integer)
+    ctx_switches: Mapped[int] = mapped_column(BigInteger)
+    timer_overhead_ns: Mapped[float] = mapped_column(Float)
+    measure_start: Mapped[datetime] = mapped_column(DateTime)
+    measure_end: Mapped[datetime] = mapped_column(DateTime)
+    quiet_json: Mapped[str] = mapped_column(Text)
+    noisy: Mapped[int] = mapped_column(Integer)  # 0/1
+    other_cores_busy_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sampler_overhead_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result_json: Mapped[str] = mapped_column(Text)
 
 
 class Span(Base):
