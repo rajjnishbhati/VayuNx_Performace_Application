@@ -1,0 +1,17 @@
+# Environments and build artefacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local data and logs (never commit measurement databases)
+profiler.db
+*.db
+*.log
+service.err
+
+# Local snapshot archive (kept on disk, not versioned)
+pyproject.zip

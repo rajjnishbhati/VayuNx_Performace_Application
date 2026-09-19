@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vayunx-profiler"
+version = "0.1.0"
+description = "VAYUNX Profiler Service (FastAPI) and Python SDK - standalone proof of concept"
+requires-python = ">=3.10"
+dependencies = [
+    # SDK runtime dependency (the SDK itself uses only the stdlib for HTTP)
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+service = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6"]
+demo = ["argon2-cffi>=23.1"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["vayunx_profiler_sdk", "profiler_service"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
