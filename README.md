@@ -58,6 +58,130 @@ python -m venv .venv
 
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
+## Crypto Lab and compare screen (Phase 2)
+
+The main question the product answers: **"If we replace crypto algorithm A with B, what changes?"**
+
+```powershell
+.\.venv\Scripts\python.exe -m profiler_service                 # service, http://127.0.0.1:8010
+cd web; npm install; npm run dev                                 # UI, http://localhost:3000
+```
+
+In the UI, click **▶ MD5 → Argon2id** and wait about 2 minutes for 5 trials × 10 s per algorithm. The result then shows:
+- a verdict and a scorecard
+- the App view, Machine view and Security tabs
+- a what-if capacity estimate
+
+The UI is documented in [`web/README.md`](web/README.md).
+
+The Lab works without the UI too:
+
+```powershell
+.\.venv\Scripts\python.exe -m vayunx_lab presets
+.\.venv\Scripts\python.exe -m vayunx_lab run --presets md5,argon2id-rfc9106-low --trials 5 --duration 10
+```
+
+### Crypto Lab (`vayunx_lab/`)
+
+**Presets (an allow-list; the Service can start only these):**
+
+| Preset | Parameters |
+|---|---|
+| MD5, SHA-256 | – |
+| PBKDF2-HMAC-SHA256 | 600,000 iterations |
+| bcrypt | cost 10 and 12 |
+| scrypt | N = 2^17, r = 8, p = 1 (`maxmem` 256 MiB) |
+| Argon2id, OWASP minimum | m = 19 MiB, t = 2, p = 1 |
+| Argon2id, RFC 9106 low-memory | m = 64 MiB, t = 3, p = 4 |
+
+Every operation hashes a synthetic password with a fresh 16-byte salt.
+
+**Protocol for each trial:**
+- It runs in a **fresh subprocess**, with a warm-up first.
+- It lasts a fixed duration (default 10 s), with a minimum of 10 operations for slow presets.
+- Variants are **interleaved** with alternating order (A B, B A, …).
+- A **quiet-machine check** runs first. It waits a bounded time for machine CPU to drop below 25 %, and if it never does, the trial is flagged rather than blocked.
+- Concurrency of 1, 2, 4 or 8 workers is optional.
+
+**What each trial records:**
+- per-operation timing. Up to 200,000 operations per trial keep raw durations, which gives **exact** percentiles; beyond that, a histogram accurate to ±6.25 %.
+- CPU time per operation
+- peak RSS: psutil `peak_wset` on Windows, `ru_maxrss` elsewhere
+- threads and context switches
+- the worker's own timer overhead
+- an environment fingerprint: CPU model, cores, RAM, OS, Python, OpenSSL and library versions
+
+**Noise check.** While a trial runs, the runner samples the worker process and the machine every 100 ms; that series feeds the Machine view.
+The noisy/quiet decision uses **cumulative counters** instead: (machine busy CPU-seconds − benchmark CPU-seconds) / wall time over the measured window.
+
+### Sampler v2 (SDK, spec C)
+
+**Default metrics** from `start_sampling()`:
+- **Process cost:** cores busy, CPU time, RSS (plus peak RSS on Windows), threads, context switches.
+- **Machine noise:** CPU (average and busiest core), available RAM, swap, load, process count, CPU frequency, and "other cores busy".
+
+**Timing:**
+- The interval adapts: about 10 ms target while a cryptographic span or op runs, 1 s otherwise. Crypto activity wakes the sampler immediately.
+- Samples are tagged `cryptographic` only while crypto runs, and use the same clock as spans.
+- Measured on an i5-8400H: the real fast interval was about 16 ms with the app waiting and about 32 ms with it busy-looping (the Windows timer floor and the GIL). The sampler itself cost about 0.4–0.6 ms per tick.
+- The CPU-cycles flag via Linux `perf` is not implemented; CPU time is used everywhere.
+
+### Compare engine v2 and `/v2` API (spec D)
+
+**Statistics:**
+- **Comparisons:** 2 or more variants, and any of them can be the reference.
+- **Per call:** the median of the trial medians, plus p95, p99, mean and IQR.
+- **Spread:** the min–max of the trial medians and a seeded bootstrap 95 % CI.
+- **Significance:** "not significant" when the variants' ranges overlap.
+
+**Estimates:** CPU-seconds per operation, operations per second per core, and capacity at a given rate:
+- cores = rate × CPU-seconds per operation
+- RAM in flight = rate × latency × memory per operation
+
+**Weak-data flags**, each naming the numbers it affects:
+- too few trials, or too few operations
+- a noisy machine
+- unstable trials
+- timer overhead
+- short runs
+- approximate memory
+- concurrency
+
+**Also in every result:** security notes per preset (spec G, OWASP, checked 2026-09-19), and a verdict built only from computed rows.
+
+**Endpoints:**
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v2/presets` | Built-in presets with their security notes |
+| `POST /v2/lab/runs` | Start a Lab experiment. One at a time; returns 409 while another is running. |
+| `GET /v2/experiments[/{id}]` | Experiment list, or one experiment with progress and ETA |
+| `POST /v2/experiments/{id}/cancel` | Cancel a queued or running experiment |
+| `GET /v2/experiments/{id}/timeseries` | Machine data, with shaded "crypto ran here" regions |
+| `GET /v2/compare?experiment_id=` or `?run_ids=a,b` | Compare a Lab experiment, or app runs matched by `crypto.operation` |
+| `GET /v2/runs` | Run search with filters and pagination |
+
+Errors are `{"detail": {"error", "fix"}}`. Every `/v1` endpoint is unchanged.
+
+**Data model:**
+- `Run` gains `variant`, `experiment_id`, `trial_index`, `source` (lab/app) and `env_json`.
+- New tables: `experiments` and `trial_results`.
+- Existing SQLite files gain the new columns automatically, keeping their rows.
+
+### Measured on this machine (one experiment)
+
+Machine: Intel Core i5-8400H (4 cores / 8 threads), Windows 11 Pro 10.0.26200, Python 3.13.9, OpenSSL 3.5.6, argon2-cffi 25.1.0.
+Run: 5 interleaved trials × 10 s per algorithm, started from the UI; 121 s total.
+
+| Algorithm | Time per call (median) | p95 | Cores busy | Peak RSS | Flags |
+|---|---|---|---|---|---|
+| MD5 | 991 ns | 1.09 µs | 1.00 | 37.6 MiB | timer overhead (100 ns, 10 % of the call) |
+| Argon2id m=64 MiB t=3 p=4 | 55.6 ms | 60.5 ms | 3.4 | 97.6 MiB | 1 of 5 trials noisy |
+
+- **Change:** about 56,000× slower per hash, which is expected: password hashes are slow on purpose.
+- **Estimate at 100 logins/s:** about 19 cores (233 % of this 8-thread machine) and 359 MiB RAM in flight.
+- **Earlier runs on the same machine** gave Argon2id medians of 56.6 ms and 61.2 ms. Numbers vary between runs, and a different machine will differ more.
+
 ## Layout
 
 ```
@@ -367,3 +491,14 @@ For primitives that take about a microsecond, use `run.op()`: a span costs many 
    - optional `metadata` on runs
 
    There is also one decision to confirm: spans and samples whose `service` differs from their run's `service` are **rejected**, so one run cannot hold several services (distributed traces are out of scope).
+9. **More new labels to reconcile with VAYUNX's taxonomy.** Phase 2 adds several labels that are not severities (Critical/High/Medium/Low) or verdicts (MATCH/PARTIAL/MISSING):
+   - "Safe for passwords" / "Not for passwords"
+   - "weak data" and its flag codes (`few_trials`, `noisy_machine`, `unstable`, `timer_overhead`, …)
+   - "not significant"
+   - "noisy" / "quiet"
+   - "reference"
+
+   Reconcile them before the compare output feeds VAYUNX findings.
+10. **Noise-check residual.** Even measured from cumulative counters, "other cores busy" reads about 0.2 cores higher during heavy multi-threaded variants on Windows: Argon2id at p=4 read 0.30–0.52 against MD5's 0.10–0.23 in the same quiet session. This is likely CPU accounting granularity, but that is not proven, and it pushes borderline heavy trials over the 0.5-core threshold. The threshold and method need review, ideally on Linux and macOS too.
+11. **Untested platforms.** The Lab, sampler and UI were built and verified on Windows 11 only. The macOS paths (`ru_maxrss` in bytes, `sysctl` CPU model) and the Linux paths (`ru_maxrss` in KiB, `/proc/cpuinfo`) are written and unit-tested for units, but have not been run on those systems.
+12. **Security references need re-checking** against the OWASP cheat sheet before shipping (spec G, checked 2026-09-19). Security notes for app data are best-effort by algorithm name, and their parameters are not checked.
