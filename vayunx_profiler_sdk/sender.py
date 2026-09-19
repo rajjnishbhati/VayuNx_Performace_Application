@@ -56,6 +56,7 @@ class BackgroundSender:
         self._ever_reached = False
         self._last_failed = False
         self._flush_timed_out = False
+        self._stopped = False
         self._counters: dict[str, int] = defaultdict(int)
         self._per_run: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self._warned: set[str] = set()
@@ -66,6 +67,11 @@ class BackgroundSender:
     def enqueue(self, kind: str, run_id: str, payload) -> bool:
         is_data = kind in DATA_PATHS
         with self._cond:
+            if self._stopped:
+                if is_data:
+                    self._counters[_RECORDED[kind]] += 1
+                    self._counters[_DROPPED[kind]] += 1
+                return False
             if is_data:
                 self._counters[_RECORDED[kind]] += 1
                 if self._data_count >= self.max_queue:
@@ -94,6 +100,23 @@ class BackgroundSender:
                     return False
                 self._cond.wait(remaining)
         return True
+
+    def shutdown(self, timeout: float | None = None) -> bool:
+        """Bounded flush, then stop the sender thread. Whatever is still queued is counted as dropped."""
+        drained = self.flush(timeout) if not self._stopped else True
+        with self._cond:
+            self._stopped = True
+            for kind, _, _ in self._queue:
+                if kind in DATA_PATHS:
+                    self._counters[_DROPPED[kind]] += 1
+            self._queue.clear()
+            self._data_count = 0
+            self._cond.notify_all()
+        try:
+            atexit.unregister(self._at_exit)
+        except Exception:
+            pass
+        return drained
 
     def stats(self) -> dict:
         with self._cond:
@@ -135,9 +158,13 @@ class BackgroundSender:
         last_tick = time.monotonic()
         while True:
             with self._cond:
+                if self._stopped:
+                    return
                 if not self._flush_now and self._data_count < self.batch_size and not self._control_waiting():
                     self._cond.wait(self.flush_interval_s)
                 self._flush_now = False
+                if self._stopped:
+                    return
             if self.on_tick and time.monotonic() - last_tick >= self.flush_interval_s:
                 last_tick = time.monotonic()
                 try:
@@ -154,6 +181,9 @@ class BackgroundSender:
                 outcome = self._send(group)
                 with self._cond:
                     self._in_flight = False
+                    if self._stopped:  # shutdown() already accounted for the queue
+                        self._cond.notify_all()
+                        return
                     if outcome == "retry":
                         self._last_failed = True
                         self._cond.notify_all()
@@ -173,7 +203,9 @@ class BackgroundSender:
                         backoff = self.backoff_initial_s
                         self._cond.notify_all()
                 if outcome == "retry":
-                    time.sleep(backoff)
+                    with self._cond:  # interruptible backoff: shutdown() wakes this immediately
+                        if not self._stopped:
+                            self._cond.wait(backoff)
                     backoff = min(backoff * 2, self.backoff_max_s)
                     break
 

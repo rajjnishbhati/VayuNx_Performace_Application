@@ -40,17 +40,21 @@ class ProcessReader:
     def prime(self) -> None:
         self.proc.cpu_percent(None)  # first reading is meaningless; this starts the interval
 
-    def read(self) -> dict:
+    def read(self, full: bool = True) -> dict:
+        """full=False skips thread count and context switches: on Windows each of those enumerates a
+        system-wide snapshot (~1.5 ms measured on an i5-8400H) while the rest cost microseconds."""
         p = self.proc
         with p.oneshot():
             cpu = p.cpu_times()
             mem = p.memory_info()
-            ctx = p.num_ctx_switches()
             out = {"proc_cores_busy": p.cpu_percent(None) / 100.0, "proc_cpu_time_s": cpu.user + cpu.system,
-                   "proc_rss_mib": mem.rss / MIB, "proc_threads": p.num_threads(),
-                   "proc_ctx_switches": ctx.voluntary + ctx.involuntary}
+                   "proc_rss_mib": mem.rss / MIB}
             if sys.platform == "win32":
                 out["proc_peak_rss_mib"] = mem.peak_wset / MIB
+            if full:
+                ctx = p.num_ctx_switches()
+                out["proc_threads"] = p.num_threads()
+                out["proc_ctx_switches"] = ctx.voluntary + ctx.involuntary
         return out
 
 

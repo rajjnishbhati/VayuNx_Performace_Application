@@ -85,10 +85,8 @@ def _measure(op, duration_s: float, min_ops: int, concurrency: int, proc: psutil
     threads = [threading.Thread(target=worker, args=(h,), name=f"lab-worker-{i}") for i, h in enumerate(hists)]
     for t in threads:
         t.start()
+    # One reading only: num_threads() costs ~1.5 ms on Windows, and polling it would load the measured process.
     threads_max = proc.num_threads()
-    while any(t.is_alive() for t in threads):
-        threads_max = max(threads_max, proc.num_threads())
-        time.sleep(0.05)
     for t in threads:
         t.join()
     total = LatencyHistogram()

@@ -97,3 +97,22 @@ FAST = dict(flush_interval_s=0.05, flush_timeout_s=0.5, backoff_initial_s=0.01, 
 @pytest.fixture
 def fast_opts():
     return dict(FAST)
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_clients(monkeypatch):
+    """Stop every ProfilerClient a test creates, so offline senders don't keep retrying in the
+    background and starve later (timing-sensitive) tests of the GIL."""
+    from vayunx_profiler_sdk import ProfilerClient
+
+    created = []
+    original = ProfilerClient.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(ProfilerClient, "__init__", tracking_init)
+    yield
+    for c in created:
+        c.shutdown(timeout=0)

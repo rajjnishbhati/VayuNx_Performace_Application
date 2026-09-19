@@ -28,7 +28,7 @@ from typing import Iterable
 from vayunx_profiler_sdk.context import current_span
 from vayunx_profiler_sdk.ops import Op, measure_op_overhead_ns, span_times
 from vayunx_profiler_sdk.privacy import clean_attributes
-from vayunx_profiler_sdk.sampling import Sampler
+from vayunx_profiler_sdk.sampling import Activity, Sampler
 from vayunx_profiler_sdk.sender import BackgroundSender
 from vayunx_profiler_sdk.transport import HttpTransport
 
@@ -65,6 +65,7 @@ class ProfilerClient:
         self._internal_errors = 0
         self._dropped_attributes = 0
         self._op_overhead_ns: float | None = None
+        self._sampler_overhead_ms: float | None = None
         self._warned: set[str] = set()
 
     # -------------------------------------------------------------- runs
@@ -80,24 +81,35 @@ class ProfilerClient:
 
     # -------------------------------------------------------------- sampling
 
-    def start_sampling(self, interval_ms: int = 500, metrics: Iterable[str] = ("cpu_pct", "memory_mb"),
-                       category: str = "general") -> None:
-        """Start a background thread sampling this process; samples are tagged to the active run."""
-        _check_category(category)
+    def start_sampling(self, interval_ms: int | None = None, metrics: Iterable[str] | None = None,
+                       category: str | None = None) -> None:
+        """Start the background sampler (process cost + machine noise); samples are tagged to the active run.
+
+        Defaults (spec C): adaptive interval (about 10 ms during crypto, 1 s otherwise), all process and
+        machine metrics, category chosen per sample ("cryptographic" while crypto runs, else "general").
+        Passing interval_ms, v1 metric names or a category keeps the v1 behaviour.
+        """
+        if category is not None:
+            _check_category(category)
         run = self._active_run
         if run is None:
             raise RuntimeError("start_sampling() needs an active run: call it inside `with profiler.run(...)`")
         if self._sampler is not None:
             raise RuntimeError("sampling is already running")
-        self._sampler = Sampler(self._sender.enqueue, run.run_id, self.service_name, category, interval_ms, list(metrics))
+        self._sampler = Sampler(self._sender.enqueue, run.run_id, self.service_name, category, interval_ms,
+                                list(metrics) if metrics is not None else None, activity=run.activity)
         self._sampler.start()
 
     def stop_sampling(self) -> dict:
-        """Stop sampling and take a final sample. Returns {'samples_recorded': n, 'errors': [...]}."""
+        """Stop sampling and take a final sample.
+
+        Returns {'samples_recorded', 'errors', 'ticks', 'overhead_ms_per_tick'}.
+        """
         if self._sampler is None:
             raise RuntimeError("sampling is not running")
         sampler, self._sampler = self._sampler, None
         result = sampler.stop()
+        self._sampler_overhead_ms = result["overhead_ms_per_tick"]
         if result["errors"]:
             self._warn_once("sampling", f"profiler sampling had {len(result['errors'])} error(s): {result['errors'][:3]}")
         return result
@@ -114,6 +126,7 @@ class ProfilerClient:
             out["internal_errors"] = out.get("internal_errors", 0) + self._internal_errors
             out["dropped_attributes"] = self._dropped_attributes
         out["op_overhead_ns"] = self._op_overhead_ns
+        out["sampler_overhead_ms_per_tick"] = self._sampler_overhead_ms
         return out
 
     def flush(self, timeout: float | None = None) -> bool:
@@ -125,6 +138,20 @@ class ProfilerClient:
 
     def close(self, timeout: float | None = None) -> bool:
         return self.flush(timeout)
+
+    def shutdown(self, timeout: float | None = None) -> bool:
+        """Stop profiling for good: stop sampling, bounded flush, stop the sender thread.
+        Anything still unsent is counted as dropped. Safe to call more than once; never raises."""
+        try:
+            if self._sampler is not None:
+                self.stop_sampling()
+        except Exception as exc:
+            self._internal_error("shutdown-sampler", exc)
+        try:
+            return self._sender.shutdown(timeout)
+        except Exception as exc:
+            self._internal_error("shutdown", exc)
+            return False
 
     # -------------------------------------------------------------- internals
 
@@ -168,6 +195,7 @@ class ProfilerRun:
         self._open_spans = 0
         self._closed = False
         self._ops: list[Op] = []
+        self.activity = Activity()  # crypto-activity signal for the adaptive sampler
 
     # ---- delivery counters (per run, what the service has accepted)
     @property
@@ -213,7 +241,8 @@ class ProfilerRun:
         except Exception as exc:
             self.client._internal_error("calibrate", exc)
         op = Op(name, category, self.client._clean(attributes), slow_ms, span_sample_every,
-                on_span=self._op_span, on_error=self.client._internal_error)
+                on_span=self._op_span, on_error=self.client._internal_error,
+                activity=self.activity if category == "cryptographic" else None)
         with self._lock:
             self._ops.append(op)
         return op
@@ -300,6 +329,8 @@ class SpanContext:
         self._token = current_span.set((self.run.run_id, self.span_id))
         with self.run._lock:
             self.run._open_spans += 1
+        if self.category == "cryptographic":
+            self.run.activity.span_enter()
         self._start_wall = datetime.now(timezone.utc)
         self._t0 = time.perf_counter_ns()  # monotonic, high resolution; wall clock only anchors start_time
         return self
@@ -310,6 +341,8 @@ class SpanContext:
             current_span.reset(self._token)
             with self.run._lock:
                 self.run._open_spans -= 1
+            if self.category == "cryptographic":
+                self.run.activity.span_exit()
             self.duration_ms = elapsed_ns / 1e6
             attrs = dict(self.attributes)
             if exc_type is not None:

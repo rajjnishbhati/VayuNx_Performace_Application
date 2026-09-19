@@ -28,8 +28,9 @@ _perf = time.perf_counter_ns
 
 class Op:
     def __init__(self, name: str, category: str, attributes: dict, slow_ms: float | None, span_sample_every: int,
-                 on_span=None, on_error=None):
+                 on_span=None, on_error=None, activity=None):
         self.name, self.category, self.attributes = name, category, attributes
+        self._activity = activity  # sampling.Activity for cryptographic ops (wakes the adaptive sampler)
         self._slow_ns = None if slow_ms is None else int(slow_ms * 1_000_000)
         self._every = max(0, int(span_sample_every or 0))
         self._on_span, self._on_error = on_span, on_error
@@ -44,8 +45,11 @@ class Op:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        elapsed = _perf() - self._tls.t0
+        end = _perf()
+        elapsed = end - self._tls.t0
         try:
+            if self._activity is not None:
+                self._activity.op_done(end)
             with self._lock:
                 h = self._hist
                 h.count += 1

@@ -172,6 +172,23 @@ def test_close_is_idempotent_and_drains(fast_opts):
     assert c.stats()["queue_depth"] == 0
 
 
+def test_shutdown_stops_the_sender_and_counts_leftovers(fast_opts):
+    c = client(DownTransport(), **fast_opts)
+    with c.run(label="x", phase="baseline") as run:
+        for _ in range(5):
+            with run.span("work"):
+                pass
+    assert c.shutdown(timeout=0.1) is False  # service down: could not drain
+    c._sender._thread.join(timeout=2)
+    assert not c._sender._thread.is_alive()
+    s = c.stats()
+    assert s["dropped_spans"] == 5 and s["queue_depth"] == 0
+    with c.run(label="y", phase="baseline") as run2:  # after shutdown: still never raises
+        with run2.span("late"):
+            pass
+    assert c.stats()["dropped_spans"] == 6 and c.shutdown() is True
+
+
 def test_misuse_still_raises_clearly():
     c = client(RecordingTransport())
     with pytest.raises(ValueError):
