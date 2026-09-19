@@ -96,8 +96,11 @@ def _rows(base_ms, rem_ms, base_mem, rem_mem):
 def test_summary_is_built_from_the_data():
     spans, samples = _rows(base_ms=0.123, rem_ms=456.789, base_mem=30.0, rem_mem=97.5)
     text = summarize(spans, samples)
-    assert "456.8 ms" in text and "0.123 ms" in text and "30.0 -> 97.5 MiB" in text
+    # per-call values in automatic units, x ratios for large changes, CPU as cores busy
     assert "'login > compute_digest'" in text  # most specific span, not its inclusive parent
+    assert "123 µs → 457 ms per call (about 3,700× slower)" in text
+    assert "cores busy 0.20 → 0.90 (4.5× higher)" in text
+    assert "peak memory 30.0 MiB → 97.5 MiB (3.2× more)" in text
     assert "slower and uses more CPU and more memory than baseline, consistent with a deliberately slow, memory-hard algorithm" in text
 
 
@@ -107,7 +110,7 @@ def test_summary_zero_cpu_baseline_wording():
         if row["metric_name"] == "cpu_pct":
             row["baseline"]["avg"], row["pct_avg"] = 0.0, None
     text = summarize(spans, samples)
-    assert "% change undefined: baseline average is 0" in text
+    assert "cores busy 0.00 → 0.90 (n/a (baseline is 0))" in text
     assert "uses more CPU and more memory" in text and "slower and more memory" not in text
 
 

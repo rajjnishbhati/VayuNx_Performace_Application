@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from profiler_service import WIRE_SCHEMA_VERSION
+from profiler_service.formatting import fmt_change, fmt_cores_value, fmt_duration_ms, fmt_mib
 from profiler_service.config import (
     DURATION_TOLERANCE_MS, DURATION_TOLERANCE_REL, MATERIAL_CHANGE_PCT, MIN_SAMPLES_PER_METRIC,
 )
@@ -204,6 +205,7 @@ def _walk_pair(b_nodes: list[AggNode], r_nodes: list[AggNode], depth: int, rows:
                "attributes_remediated": {k: sorted(v) for k, v in r.attributes.items()} if r else None,
                "baseline": b.stats() if b else None, "remediated": r.stats() if r else None,
                "delta_total_ms": None, "pct_total": None, "delta_mean_ms": None, "pct_mean": None, "notes": notes}
+        row["change_per_call"] = fmt_change(b.mean_ms, r.mean_ms) if b and r else None
         if status == MATCHED:
             row["delta_total_ms"] = r.total_ms - b.total_ms
             row["pct_total"] = pct_change(b.total_ms, r.total_ms)
@@ -251,6 +253,7 @@ def compare_samples(baseline: list[SampleRec], remediated: list[SampleRec]) -> l
         for stat in ("avg", "min", "max"):
             row[f"delta_{stat}"] = None
             row[f"pct_{stat}"] = None
+        row["change_avg"] = row["change_peak"] = None
         if status != MATCHED:
             row["notes"].append("captured in baseline only" if status == BASELINE_ONLY else "captured in remediated only")
         elif row["unit"] is None:
@@ -259,6 +262,9 @@ def compare_samples(baseline: list[SampleRec], remediated: list[SampleRec]) -> l
             for stat in ("avg", "min", "max"):
                 row[f"delta_{stat}"] = row["remediated"][stat] - row["baseline"][stat]
                 row[f"pct_{stat}"] = pct_change(row["baseline"][stat], row["remediated"][stat])
+            words = ("higher", "lower") if key[0] == "cpu_pct" else ("more", "less")
+            row["change_avg"] = fmt_change(row["baseline"]["avg"], row["remediated"]["avg"], *words)
+            row["change_peak"] = fmt_change(row["baseline"]["max"], row["remediated"]["max"], *words)
         for side in ("baseline", "remediated"):
             if row[side] and row[side]["count"] < MIN_SAMPLES_PER_METRIC:
                 row["notes"].append(f"only {row[side]['count']} {side} sample(s); treat this delta as indicative only")
@@ -269,22 +275,6 @@ def compare_samples(baseline: list[SampleRec], remediated: list[SampleRec]) -> l
 # ----------------------------------------------------------------------------- summary
 
 
-def _fmt_ms(v: float) -> str:
-    return f"{v:,.3f} ms" if abs(v) < 10 else f"{v:,.1f} ms"
-
-
-def _direction(pct: float | None, up: str, down: str) -> str:
-    if pct is None:
-        return "change not expressible as %"
-    if abs(pct) < MATERIAL_CHANGE_PCT:
-        return f"no material change (within ±{MATERIAL_CHANGE_PCT:g}%)"
-    return up if pct > 0 else down
-
-
-def _fmt_pct(p: float | None) -> str:
-    return "n/a" if p is None else f"{p:+.1f}%"
-
-
 def summarize(span_rows: list[dict], sample_rows: list[dict]) -> str:
     """One plain-language paragraph built only from the computed rows."""
     parts: list[str] = []
@@ -292,9 +282,8 @@ def summarize(span_rows: list[dict], sample_rows: list[dict]) -> str:
     if top:
         b_total = sum(r["baseline"]["total_ms"] for r in top)
         r_total = sum(r["remediated"]["total_ms"] for r in top)
-        pct = pct_change(b_total, r_total)
-        parts.append(f"Instrumented time in matched top-level spans: remediated {_fmt_ms(r_total)} vs baseline "
-                     f"{_fmt_ms(b_total)} ({_fmt_pct(pct)}; {_direction(pct, 'slower', 'faster')}).")
+        parts.append(f"Instrumented time in matched top-level spans: {fmt_duration_ms(b_total)} → {fmt_duration_ms(r_total)} "
+                     f"({fmt_change(b_total, r_total)}).")
 
     matched = [r for r in span_rows if r["status"] == MATCHED]
     largest = max(matched, key=lambda r: abs(r["delta_total_ms"]), default=None)
@@ -308,24 +297,26 @@ def summarize(span_rows: list[dict], sample_rows: list[dict]) -> str:
             break
         largest = kids[0]
     if largest:
-        parts.append(f"Largest change: '{' > '.join(largest['path'])}' ({largest['category_remediated']}) "
-                     f"{_fmt_ms(largest['baseline']['total_ms'])} -> {_fmt_ms(largest['remediated']['total_ms'])} "
-                     f"({_fmt_pct(largest['pct_total'])}).")
+        b, r = largest["baseline"], largest["remediated"]
+        calls = f"{b['count']:,} call(s) each" if b["count"] == r["count"] else f"{b['count']:,} vs {r['count']:,} calls"
+        parts.append(f"Largest change: '{' > '.join(largest['path'])}' ({largest['category_remediated']}): "
+                     f"{fmt_duration_ms(b['mean_ms'])} → {fmt_duration_ms(r['mean_ms'])} per call "
+                     f"({fmt_change(b['mean_ms'], r['mean_ms'])}), {calls}.")
 
     by_metric = {(r["metric_name"]): r for r in sample_rows if r["status"] == MATCHED and r["unit"]}
     sampled, few = [], False
     cpu, mem = by_metric.get("cpu_pct"), by_metric.get("memory_mb")
     if cpu:
-        cpu_pct_text = ("% change undefined: baseline average is 0" if cpu["pct_avg"] is None and cpu["baseline"]["avg"] == 0
-                        else _fmt_pct(cpu["pct_avg"]))
-        sampled.append(f"average CPU {cpu['baseline']['avg']:.1f} -> {cpu['remediated']['avg']:.1f} {cpu['unit']} ({cpu_pct_text})")
+        sampled.append(f"cores busy {fmt_cores_value(cpu['baseline']['avg'])} → {fmt_cores_value(cpu['remediated']['avg'])} "
+                       f"({fmt_change(cpu['baseline']['avg'], cpu['remediated']['avg'], 'higher', 'lower')})")
     if mem:
-        sampled.append(f"peak memory {mem['baseline']['max']:.1f} -> {mem['remediated']['max']:.1f} {mem['unit']} ({_fmt_pct(mem['pct_max'])})")
+        sampled.append(f"peak memory {fmt_mib(mem['baseline']['max'])} → {fmt_mib(mem['remediated']['max'])} "
+                       f"({fmt_change(mem['baseline']['max'], mem['remediated']['max'], 'more', 'less')})")
     for r in (cpu, mem):
         if r and min(r["baseline"]["count"], r["remediated"]["count"]) < MIN_SAMPLES_PER_METRIC:
             few = True
     if sampled:
-        parts.append("Sampling: " + "; ".join(sampled) + (" - few samples, indicative only." if few else "."))
+        parts.append("Machine: " + "; ".join(sampled) + (" - few samples, indicative only." if few else "."))
 
     if largest and largest["category_remediated"] == "cryptographic" and (largest["pct_total"] or 0) >= MATERIAL_CHANGE_PCT:
         memory_up = bool(mem and mem["pct_max"] is not None and mem["pct_max"] >= MATERIAL_CHANGE_PCT)

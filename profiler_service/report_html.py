@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from html import escape
 
+from profiler_service.formatting import fmt_cores_value, fmt_duration_ms, fmt_mib
+
 D3 = "https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
 FLAME_JS = "https://cdn.jsdelivr.net/npm/d3-flame-graph@4.1.3/dist/d3-flamegraph.min.js"
 FLAME_CSS = "https://cdn.jsdelivr.net/npm/d3-flame-graph@4.1.3/dist/d3-flamegraph.css"
@@ -88,25 +90,34 @@ def _attrs(a) -> str:
 
 def render_report(p: dict) -> str:
     b, r = p["baseline"], p["remediated"]
+    def side(row, key, field):
+        return row[key][field] if row[key] else None
+
     span_rows = "".join(
         f"<tr><td style='padding-left:{8 + 18 * row['depth']}px'><code>{escape(row['span_name'])}</code></td>"
         f"<td><span class='status {row['status']}'>{escape(row['status'].replace('_', ' '))}</span></td>"
-        f"<td>{escape(row['category_baseline'] or '-')} / {escape(row['category_remediated'] or '-')}</td>"
-        f"<td class='num'>{row['baseline']['count'] if row['baseline'] else '-'} / {row['remediated']['count'] if row['remediated'] else '-'}</td>"
-        f"<td class='num'>{_num(row['baseline']['total_ms'] if row['baseline'] else None)}</td>"
-        f"<td class='num'>{_num(row['remediated']['total_ms'] if row['remediated'] else None)}</td>"
-        f"<td class='num'>{_num(row['delta_total_ms'])}</td><td class='num'>{_pct(row['pct_total'])}</td>"
-        f"<td class='num'>{_num(row['baseline']['mean_ms'] if row['baseline'] else None)} / {_num(row['remediated']['mean_ms'] if row['remediated'] else None)}</td>"
-        f"<td class='muted'>{_attrs(row['attributes_baseline'])}{' → ' + _attrs(row['attributes_remediated']) if row['attributes_remediated'] != row['attributes_baseline'] else ''}"
+        f"<td class='num'>{fmt_duration_ms(side(row, 'baseline', 'mean_ms'))}</td>"
+        f"<td class='num'>{fmt_duration_ms(side(row, 'remediated', 'mean_ms'))}</td>"
+        f"<td class='num'><b>{escape(row['change_per_call'] or '-')}</b></td>"
+        f"<td class='num'>{side(row, 'baseline', 'count') or '-'} / {side(row, 'remediated', 'count') or '-'}</td>"
+        f"<td class='num'>{fmt_duration_ms(side(row, 'baseline', 'total_ms'))} → {fmt_duration_ms(side(row, 'remediated', 'total_ms'))}</td>"
+        f"<td class='muted'>{escape(row['category_remediated'] or row['category_baseline'] or '-')}"
+        f"{'<br>' + _attrs(row['attributes_baseline']) if row['attributes_baseline'] else ''}"
+        f"{' → ' + _attrs(row['attributes_remediated']) if row['attributes_remediated'] != row['attributes_baseline'] else ''}"
         f"{''.join('<br>' + escape(n) for n in row['notes'])}</td></tr>" for row in p["span_comparison"])
 
+    def metric_value(row, key, stat):
+        v = side(row, key, stat)
+        return fmt_cores_value(v) if row["metric_name"] == "cpu_pct" else (fmt_mib(v) if row["unit"] == "MiB" else _num(v, 2))
+
+    metric_label = {"cpu_pct": "CPU (cores busy)", "memory_mb": "Memory (RSS)", "num_threads": "Threads"}
     sample_rows = "".join(
-        f"<tr><td><code>{escape(row['metric_name'])}</code></td><td>{escape(row['category'])}</td><td>{escape(row['unit'] or '/'.join(row['units_baseline'] + row['units_remediated']))}</td>"
-        f"<td><span class='status {row['status']}'>{escape(row['status'].replace('_', ' '))}</span></td>"
-        + "".join(f"<td class='num'>{_num(row['baseline'][s] if row['baseline'] else None, 2)}</td>"
-                  f"<td class='num'>{_num(row['remediated'][s] if row['remediated'] else None, 2)}</td>"
-                  f"<td class='num'>{_pct(row['pct_' + s])}</td>" for s in ('avg', 'min', 'max'))
-        + f"<td class='num'>{row['baseline']['count'] if row['baseline'] else '-'} / {row['remediated']['count'] if row['remediated'] else '-'}</td>"
+        f"<tr><td>{escape(metric_label.get(row['metric_name'], row['metric_name']))}"
+        f"<br><span class='muted'>{escape(row['category'])}</span></td>"
+        f"<td class='num'>{metric_value(row, 'baseline', 'avg')} / {metric_value(row, 'baseline', 'max')}</td>"
+        f"<td class='num'>{metric_value(row, 'remediated', 'avg')} / {metric_value(row, 'remediated', 'max')}</td>"
+        f"<td class='num'><b>{escape(row['change_avg'] or '-')}</b></td><td class='num'><b>{escape(row['change_peak'] or '-')}</b></td>"
+        f"<td class='num'>{side(row, 'baseline', 'count') or '-'} / {side(row, 'remediated', 'count') or '-'}</td>"
         f"<td class='muted'>{escape('; '.join(row['notes']))}</td></tr>" for row in p["sampling_comparison"])
 
     data_json = json.dumps({"baseline": b["flame_graph"], "remediated": r["flame_graph"]}).replace("</", "<\\/")
@@ -129,12 +140,12 @@ def render_report(p: dict) -> str:
 <div id="flame-remediated"></div><div id="details-remediated" class="details"></div></div>
 
 <h2>Span deltas (matched by name + position in tree)</h2>
-<div class="card scroll"><table><tr><th>Span</th><th>Status</th><th>Category (b / r)</th><th>Count (b / r)</th><th>Baseline total ms</th><th>Remediated total ms</th><th>Δ ms</th><th>% change</th><th>Mean ms (b / r)</th><th>Attributes / notes</th></tr>
-{span_rows or '<tr><td colspan=10 class=muted>No spans captured.</td></tr>'}</table></div>
+<div class="card scroll"><table><tr><th>Span</th><th>Status</th><th>Baseline per call</th><th>Remediated per call</th><th>Change per call</th><th>Calls (b / r)</th><th>Total time (b → r)</th><th>Category / attributes / notes</th></tr>
+{span_rows or '<tr><td colspan=8 class=muted>No spans captured.</td></tr>'}</table></div>
 
 <h2>Sampling metric deltas (periodic system metrics)</h2>
-<div class="card scroll"><table><tr><th>Metric</th><th>Category</th><th>Unit</th><th>Status</th><th>Base avg</th><th>Rem avg</th><th>% avg</th><th>Base min</th><th>Rem min</th><th>% min</th><th>Base max</th><th>Rem max</th><th>% max</th><th>Samples (b / r)</th><th>Notes</th></tr>
-{sample_rows or '<tr><td colspan=15 class=muted>No samples captured.</td></tr>'}</table>
+<div class="card scroll"><table><tr><th>Metric</th><th>Baseline avg / peak</th><th>Remediated avg / peak</th><th>Change (avg)</th><th>Change (peak)</th><th>Samples (b / r)</th><th>Notes</th></tr>
+{sample_rows or '<tr><td colspan=7 class=muted>No samples captured.</td></tr>'}</table>
 <p class="muted">"Sampling" here means periodic process metrics (psutil), not statistical call-stack sampling.</p></div>
 
 <script type="application/json" id="flame-data">{data_json}</script>
