@@ -1,12 +1,15 @@
 /** SDK state, the per-call sink hooks report to, and the public init/shutdown/span/measure/status API. */
 
-import { context, SpanStatusCode, trace, type Context, type Span } from "@opentelemetry/api";
+import { context, createContextKey, SpanStatusCode, trace, type Context, type Span } from "@opentelemetry/api";
 
 import * as config from "./config";
 import { gauges, resourceAttrs, tracing, type Tracing } from "./otel";
 import { OpHistograms, Shipper, type Attrs } from "./ship";
 
 export const VERSION = "0.3.0";
+/** The innermost span()/measure() name. Crypto series recorded inside it carry it as `vayunx.scope`, so the
+ *  compare view can match "the hashing done in login" across variants, apart from unrelated hashing. */
+export const SCOPE_KEY = createContextKey("vayunx.scope");
 const ACTIVE_WINDOW_MS = 50; // a crypto call finished within the last 50 ms counts as crypto activity
 
 export interface CallInfo {
@@ -35,6 +38,7 @@ export class State {
   lastOpAt = 0;
   depth = 0; // > 0 while a synchronous hooked call runs: nested hooked calls belong to it
   private keyIds = new Map<string, number>();
+  private scopedIds = new Map<number, Map<string, number>>();
 
   constructor(readonly cfg: config.Config) {
     const attrs = resourceAttrs(cfg, VERSION);
@@ -64,6 +68,19 @@ export class State {
     return id;
   }
 
+  /** Series id of `c` recorded inside scope `scope`. */
+  scopedId(c: CallInfo, scope: string): number {
+    const base = this.seriesId(c);
+    let m = this.scopedIds.get(base);
+    if (m === undefined) this.scopedIds.set(base, (m = new Map()));
+    let id = m.get(scope);
+    if (id === undefined) {
+      id = this.ophists.keyId({ ...this.ophists.keyAttrs[base], "vayunx.scope": scope });
+      m.set(scope, id);
+    }
+    return id;
+  }
+
   /** Fast path: a finished call. `ms` is wall time from call to result (queue wait included for async). */
   record(c: CallInfo, t0: number, t1: number, parent: Context | undefined, err?: unknown, cpuMs?: number, queued?: boolean): void {
     try {
@@ -73,7 +90,8 @@ export class State {
         this.counters.errors++;
       } else {
         this.counters.calls++;
-        this.ophists.record(this.seriesId(c), Math.round(ms * 1e6));
+        const scope = (parent ?? context.active()).getValue(SCOPE_KEY) as string | undefined;
+        this.ophists.record(scope === undefined ? this.seriesId(c) : this.scopedId(c, scope), Math.round(ms * 1e6));
       }
       if (ms >= this.cfg.slowMs || (err !== undefined && ms >= 0.1)) this.span(c, t0, ms, parent, err, cpuMs, queued);
     } catch {
@@ -201,7 +219,7 @@ export function span<T>(name: string, fn: (span?: Span) => T, attributes?: Attrs
   };
   let result: T;
   try {
-    result = context.with(trace.setSpan(context.active(), sp), () => fn(sp));
+    result = context.with(trace.setSpan(context.active(), sp).setValue(SCOPE_KEY, String(name).slice(0, 128)), () => fn(sp));
   } catch (e) {
     end(e);
     throw e;

@@ -157,19 +157,20 @@ def test_fast_hook_overhead_is_under_two_microseconds(live):
     start(live)
     n, pw = 20000, b"correct horse battery staple"
     orig = vayunx._core.original("hashlib.md5")
-    best = []
-    for _ in range(5):
+
+    def per_call(fn):
         t = time.perf_counter_ns()
         for _ in range(n):
-            orig(pw).digest()
-        plain = time.perf_counter_ns() - t
-        t = time.perf_counter_ns()
-        for _ in range(n):
-            hashlib.md5(pw).digest()
-        hooked = time.perf_counter_ns() - t
-        best.append((hooked - plain) / n)
-    overhead = sorted(best)[len(best) // 2]
-    print(f"hashlib.md5 hook overhead: {overhead:.0f} ns/call")
+            fn(pw).digest()
+        return (time.perf_counter_ns() - t) / n
+
+    # interleaved rounds; background load only ever adds time, so the minimum is the intrinsic cost
+    plain, hooked = [], []
+    for _ in range(15):
+        plain.append(per_call(orig))
+        hooked.append(per_call(hashlib.md5))
+    overhead = min(hooked) - min(plain)
+    print(f"hashlib.md5 hook overhead: {overhead:.0f} ns/call (plain {min(plain):.0f} ns)")
     assert overhead < 2000
 
 
@@ -268,3 +269,23 @@ def test_offline_exporter_errors_are_rate_limited(caplog):
     vayunx.shutdown(timeout_s=2.0)
     otel = [r for r in caplog.records if r.name.startswith("opentelemetry.exporter")]
     assert len(otel) <= 1
+
+
+def test_crypto_inside_a_span_carries_its_scope(live):
+    rid, _ = start(live)
+
+    @vayunx.measure("login")
+    def login():
+        hashlib.md5(b"pw").digest()
+        hashlib.pbkdf2_hmac("sha256", b"pw", b"s" * 16, 1000)
+
+    for _ in range(3):
+        login()
+    hashlib.md5(b"etag").digest()  # unrelated hashing outside any span
+    vayunx.shutdown(timeout_s=5.0)
+    stats = get(f"{live}/v1/runs/{rid}/op-stats")
+    by = {}
+    for s in stats:
+        k = (s["attributes"].get("vayunx.scope"), s["op_name"], s["attributes"]["crypto.algorithm"])
+        by[k] = by.get(k, 0) + s["count"]
+    assert by == {("login", "hash", "MD5"): 3, ("login", "kdf", "PBKDF2-HMAC-SHA256"): 3, (None, "hash", "MD5"): 1}

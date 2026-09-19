@@ -184,3 +184,20 @@ test("launcher profiles an ESM app with early-bound imports", async () => {
   const run = await get(`${svc.url}/v1/runs/${runId}`);
   assert.equal(run.service, "launched-node-app");
 });
+
+test("crypto inside a span carries its scope", async () => {
+  const { runId } = start();
+  const login = vayunx.measure("login", async () => {
+    crypto.createHash("md5").update("pw").digest();
+    await promisify(crypto.pbkdf2)("pw", "s".repeat(16), 1000, 32, "sha256");
+  });
+  for (let i = 0; i < 3; i++) await login();
+  crypto.createHash("md5").update("etag").digest(); // unrelated hashing outside any span
+  await vayunx.shutdown(5000);
+  const by = {};
+  for (const s of await get(`${svc.url}/v1/runs/${runId}/op-stats`)) {
+    const k = `${s.attributes["vayunx.scope"] ?? "-"}|${s.op_name}|${s.attributes["crypto.algorithm"]}`;
+    by[k] = (by[k] ?? 0) + s.count;
+  }
+  assert.deepEqual(by, { "login|hash|MD5": 3, "login|kdf|PBKDF2-HMAC-SHA256": 3, "-|hash|MD5": 1 });
+});

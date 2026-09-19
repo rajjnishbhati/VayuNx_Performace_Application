@@ -18,10 +18,9 @@ from opentelemetry.trace import Status, StatusCode
 from vayunx import _config
 from vayunx._cpuclock import SOURCE as CPU_CLOCK_SOURCE
 from vayunx._cpuclock import thread_cpu_ns
-from vayunx._hooks import HookManager, Spec, key_id
+from vayunx._hooks import SCOPE, HookManager, Spec, key_id
 from vayunx._otel import CPU_ATTR, meter_provider, resource_attrs, tracer_provider
 from vayunx._ship import OpHistograms, Shipper
-from vayunx_profiler_sdk.histogram import LatencyHistogram
 from vayunx_profiler_sdk.sampling import Activity
 
 log = logging.getLogger("vayunx")
@@ -35,7 +34,7 @@ class _State:
         self.findings = {"blocking_event_loop": 0}
         self.activity = Activity()
         self.ophists = OpHistograms()
-        self.hist_lock, self.hists = self.ophists.lock, self.ophists.hists
+        self.queue = self.ophists.queue
         attrs = resource_attrs(cfg, version)
         self.tp = tracer_provider(cfg, attrs)
         self.tracer = self.tp.get_tracer("vayunx-python", version)
@@ -44,11 +43,6 @@ class _State:
         self.slow_ns = int(cfg.slow_ms * 1_000_000)
         self.sample_every = cfg.span_sample_every
         self._sampled = 0
-
-    def new_hist(self, kid: int, ns: int) -> LatencyHistogram:  # caller holds hist_lock
-        h = self.hists[kid] = LatencyHistogram()
-        h.min_ns = h.max_ns = ns
-        return h
 
     # called after every hooked call that is not on the inlined leaf fast path (see _hooks.py)
     def on_call(self, spec: Spec, args, kwargs, t0: int, t1: int, c0: int, err: BaseException | None) -> None:
@@ -63,14 +57,13 @@ class _State:
                 self._span(spec, args, kwargs, ns, c0, err)
             return
         ck = spec.fixed or (spec.keyfn(args, kwargs) if spec.keyfn else spec.describe(args, kwargs)[:2])
+        scope = SCOPE.get()
+        if scope is not None:
+            ck = (ck[0], ck[1], scope)
         kid = spec.keys.get(ck)
         if kid is None:
             kid = spec.keys[ck] = key_id(spec, *ck)
-        with self.hist_lock:
-            h = self.hists.get(kid)
-            if h is None:
-                h = self.new_hist(kid, ns)
-            h.record(ns)
+        self.ophists.record(kid, ns)
         if ns >= self.slow_ns or self.sample_every:
             self.on_slow_or_sampled(spec, args, kwargs, ns, c0)
 
@@ -206,12 +199,16 @@ def span(name: str, **attributes):
 
 
 class _SpanCM:
-    __slots__ = ("st", "name", "attributes", "_cm")
+    __slots__ = ("st", "name", "attributes", "_cm", "_tok")
 
     def __init__(self, st, name, attributes):
-        self.st, self.name, self.attributes, self._cm = st, name, attributes, None
+        self.st, self.name, self.attributes, self._cm, self._tok = st, name, attributes, None, None
 
     def __enter__(self):
+        try:
+            self._tok = SCOPE.set(str(self.name)[:128])
+        except Exception:
+            self._tok = None
         try:
             self._cm = self.st.tracer.start_as_current_span(self.name, attributes=self.attributes or None,
                                                             record_exception=False, set_status_on_exception=False)
@@ -221,6 +218,11 @@ class _SpanCM:
             return None
 
     def __exit__(self, exc_type, exc, tb):
+        if self._tok is not None:
+            try:
+                SCOPE.reset(self._tok)
+            except Exception:
+                pass
         cm = self._cm
         if cm is None:
             return False

@@ -137,6 +137,32 @@ def test_compare_app_runs_from_the_sdk(live):
     assert cmp["variants"][1]["vs_reference"]["time_ratio"] > 1 and "per call" in cmp["verdict"]
 
 
+def test_app_compare_prefers_the_scoped_operation_over_unrelated_hashing(live):
+    """Both runs also hash a large buffer outside any span (think ETags). The comparison must still be about
+    the hashing done inside `login`, not whichever unscoped series happens to take more time."""
+    import hashlib
+
+    import argon2
+    import vayunx
+
+    big = b"x" * (32 * 1024 * 1024)
+    run_ids = []
+    for variant in ("md5", "argon2id"):
+        st = vayunx.init(endpoint=live, service="scoped-app", variant=variant, export_interval_s=0.2, gauges=False)
+        ph = argon2.PasswordHasher(time_cost=1, memory_cost=8 * 1024, parallelism=1)
+        for _ in range(3):
+            with vayunx.span("login"):
+                hashlib.md5(b"pw").digest() if variant == "md5" else ph.hash("pw")
+            hashlib.sha256(big).digest()  # unrelated, unscoped, and slower than the login hashing
+        assert vayunx.shutdown(timeout_s=5.0)
+        run_ids.append(st["run_id"])
+    status, cmp = call(f"{live}/v2/compare?run_ids={','.join(run_ids)}")
+    assert status == 200, cmp
+    assert cmp["operation"] == "login · hash" and "hash" in cmp["other_operations"]
+    assert [(v["security"]["algorithm"], v["security"]["safe_for_passwords"]) for v in cmp["variants"]] == \
+        [("MD5", False), ("Argon2id", True)]
+
+
 def test_unknown_experiment_is_a_friendly_404(live):
     status, out = call(f"{live}/v2/experiments/does-not-exist")
     assert status == 404 and out["detail"]["error"] and out["detail"]["fix"]

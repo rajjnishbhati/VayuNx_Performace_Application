@@ -196,21 +196,30 @@ def _lab_trials(session: Session, exp_id: str) -> list[TrialInput]:
     return out
 
 
+def _op_key(attrs: dict, fallback: str) -> str:
+    """'login · hash' for crypto recorded inside a vayunx.span/measure named login, else 'hash'."""
+    op = attrs.get("crypto.operation") or fallback
+    scope = attrs.get("vayunx.scope")
+    return f"{scope} · {op}" if scope else op
+
+
 def _app_trials(session: Session, runs: list[Run]) -> tuple[list[TrialInput], str, list[str]]:
     """Each app run is one trial of its variant (run.variant or run.label). Data is matched by operation:
-    crypto.operation attribute when present, else the op/span name (name-path fallback for spans)."""
+    crypto.operation attribute when present, else the op/span name (name-path fallback for spans), qualified
+    by the SDK's vayunx.scope (the enclosing span name) when there is one. Scoped operations the runs share
+    are preferred: they are the code path the user labelled, not incidental hashing elsewhere in the app."""
     per_run: dict[str, dict[str, dict]] = {}
     for run in runs:
         ops: dict[str, dict] = {}
         for row in session.scalars(select(OpStat).where(OpStat.run_id == run.run_id)):
             attrs = json.loads(row.attributes_json)
-            key = attrs.get("crypto.operation") or row.op_name
+            key = _op_key(attrs, row.op_name)
             entry = ops.setdefault(key, {"hist": LatencyHistogram(), "attrs": attrs})
             entry["hist"].merge(LatencyHistogram.from_dict(json.loads(row.histogram_json)))
         if not ops:  # fall back to cryptographic spans
             for sp in session.scalars(select(Span).where(Span.run_id == run.run_id, Span.category == "cryptographic")):
                 attrs = json.loads(sp.attributes_json)
-                key = attrs.get("crypto.operation") or sp.span_name
+                key = _op_key(attrs, sp.span_name)
                 entry = ops.setdefault(key, {"hist": LatencyHistogram(), "attrs": attrs})
                 entry["hist"].record(int(sp.duration_ms * 1e6))
         per_run[run.run_id] = ops
@@ -218,7 +227,8 @@ def _app_trials(session: Session, runs: list[Run]) -> tuple[list[TrialInput], st
     if not common:
         raise problem(409, "These runs have no crypto operation in common.",
                       "Pick runs that record the same operation (the same crypto.operation or op/span name).")
-    totals = {k: sum(per_run[r][k]["hist"].sum_ns for r in per_run) for k in common}
+    scoped = {k for k in common if " · " in k}
+    totals = {k: sum(per_run[r][k]["hist"].sum_ns for r in per_run) for k in (scoped or common)}
     operation = max(totals, key=totals.get)
     trials = []
     for i, run in enumerate(runs):

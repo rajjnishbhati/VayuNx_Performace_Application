@@ -11,6 +11,7 @@ retried on the next tick. Never raises into the host.
 
 from __future__ import annotations
 
+import collections
 import threading
 import time
 import urllib.error
@@ -67,19 +68,49 @@ def build_request(resource_attrs: dict, start_ns: int, end_ns: int, hists: list)
     return req.SerializeToString()
 
 
+QUEUE_MAX = 200_000  # beyond this the calling thread aggregates inline (backpressure, nothing dropped)
+AGGREGATE_EVERY_S = 0.1
+
+
 class OpHistograms:
-    """Per-(operation, algorithm, params, library) histograms. The SDK's hot path updates `hists` in
-    place under `lock` (inlined for speed); the shipper swaps the dict out once per interval."""
+    """Per-series latency histograms (series = interned key id, see vayunx._hooks.KEY_ATTRS).
+
+    Hot path: `queue.append((kid, ns))` - deque.append is atomic, so no lock (~50 ns instead of ~190 ns for
+    the lock plus ~400 ns for a histogram update, measured on an i5-8400H). The shipper thread folds the
+    queue into histograms every 100 ms; if it falls behind, callers fold inline once the queue is full."""
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.hists: dict[int, LatencyHistogram] = {}  # interned key id (vayunx._hooks.KEY_ATTRS) -> histogram
+        self.queue: collections.deque = collections.deque()
+        self.hists: dict[int, LatencyHistogram] = {}
         self._start_ns = time.time_ns()
 
-    def drain(self) -> tuple[int, int, dict]:
+    def record(self, kid: int, ns: int) -> None:
         with self.lock:
-            drained = dict(self.hists)
-            self.hists.clear()  # same dict object: the hot path holds a reference to it
+            self._record(kid, ns)
+
+    def _record(self, kid: int, ns: int) -> None:  # caller holds lock
+        h = self.hists.get(kid)
+        if h is None:
+            h = self.hists[kid] = LatencyHistogram()
+        h.record(ns)
+
+    def aggregate(self) -> int:
+        """Fold queued samples into the histograms. Returns how many were folded."""
+        popleft, n = self.queue.popleft, 0
+        with self.lock:
+            while True:
+                try:
+                    kid, ns = popleft()
+                except IndexError:
+                    return n
+                self._record(kid, ns)
+                n += 1
+
+    def drain(self) -> tuple[int, int, dict]:
+        self.aggregate()
+        with self.lock:
+            drained, self.hists = self.hists, {}
             start, self._start_ns = self._start_ns, time.time_ns()
         return start, self._start_ns, drained
 
@@ -94,8 +125,15 @@ class Shipper(threading.Thread):
         self._pending: list[bytes] = []
 
     def run(self) -> None:
-        while not self._stop.wait(self.cfg.export_interval_s):
-            self._tick(time.monotonic() + self.cfg.flush_timeout_s)
+        next_ship = time.monotonic() + self.cfg.export_interval_s
+        while not self._stop.wait(min(AGGREGATE_EVERY_S, self.cfg.export_interval_s)):
+            try:
+                self.ophists.aggregate()
+            except Exception:
+                self.counters["internal_errors"] = self.counters.get("internal_errors", 0) + 1
+            if time.monotonic() >= next_ship:
+                self._tick(time.monotonic() + self.cfg.flush_timeout_s)
+                next_ship = time.monotonic() + self.cfg.export_interval_s
 
     def _tick(self, deadline: float) -> bool:
         try:

@@ -18,12 +18,14 @@ import importlib.util
 import json
 import sys
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from time import perf_counter_ns
 from types import FunctionType
 from typing import Callable
 
 from vayunx._cpuclock import thread_cpu_ns
+from vayunx._ship import QUEUE_MAX
 
 # ----------------------------------------------------------------------------- describers
 
@@ -371,15 +373,19 @@ _inside: dict[int, int] = {}
 _OUTER_FAST = {"hmac.new", "hmac.digest", "jwt.encode", "jwt.decode", "cryptography.Fernet.encrypt",
                "cryptography.Fernet.decrypt"}
 
+# The innermost vayunx.span()/measure() name. Crypto series recorded inside it carry it as `vayunx.scope`,
+# so the compare view can match "the hashing done in login" across variants, apart from unrelated hashing.
+SCOPE: ContextVar[str | None] = ContextVar("vayunx_scope", default=None)
+
 # Histogram series keys are interned to small ints so the hot path never hashes nested tuples.
 _key_ids: dict[tuple, int] = {}
 KEY_ATTRS: list[tuple] = []  # id -> (("crypto.operation", ..), ("crypto.algorithm", ..), ...)
 _key_lock = threading.Lock()
 
 
-def key_id(spec: Spec, algorithm: str, params: str | None) -> int:
+def key_id(spec: Spec, algorithm: str, params: str | None, scope: str | None = None) -> int:
     attrs = (("crypto.operation", spec.operation), ("crypto.algorithm", algorithm), ("crypto.params", params),
-             ("crypto.library", spec.library))
+             ("crypto.library", spec.library), ("vayunx.scope", scope))
     with _key_lock:
         kid = _key_ids.get(attrs)
         if kid is None:
@@ -419,6 +425,8 @@ def _fast_wrapper(spec: Spec, orig: Callable, cell: list) -> Callable:
     outer = spec.name in _OUTER_FAST
     unwrap_digest = spec.name in ("hmac.new", "hmac.digest")
     inside, get_ident, pc = _inside, threading.get_ident, perf_counter_ns
+    scope_get = SCOPE.get
+    scoped: dict[str, int] = {}  # scope -> series id, for fixed-key hooks
 
     @functools.wraps(orig)
     def wrapper(*args, **kwargs):
@@ -455,29 +463,23 @@ def _fast_wrapper(spec: Spec, orig: Callable, cell: list) -> Callable:
             if act.idle:
                 act.wake()
             kid = fixed_kid
+            scope = scope_get()
             if kid is None:
                 ck = keyfn(args, kwargs)
+                if scope is not None:
+                    ck = (ck[0], ck[1], scope)
                 kid = keys.get(ck)
                 if kid is None:
                     kid = keys[ck] = key_id(spec, *ck)
-            # LatencyHistogram.record, inlined (scheme log2x8-ns; see vayunx_profiler_sdk/histogram.py)
-            with st.hist_lock:
-                h = st.hists.get(kid)
-                if h is None:
-                    h = st.new_hist(kid, ns)
-                h.count += 1
-                h.sum_ns += ns
-                if ns < h.min_ns:
-                    h.min_ns = ns
-                elif ns > h.max_ns:
-                    h.max_ns = ns
-                if ns < 8:
-                    idx = ns if ns > 0 else 0
-                else:
-                    b = ns.bit_length() - 4
-                    idx = 8 + 8 * b + ((ns >> b) & 7)
-                bk = h.buckets
-                bk[idx] = bk.get(idx, 0) + 1
+            elif scope is not None:
+                kid = scoped.get(scope)
+                if kid is None:
+                    kid = scoped[scope] = key_id(spec, spec.fixed[0], spec.fixed[1], scope)
+            q = st.queue
+            if len(q) < QUEUE_MAX:
+                q.append((kid, ns))  # atomic; folded into histograms by the shipper thread
+            else:
+                st.ophists.record(kid, ns)  # the shipper is behind: fold inline instead of dropping
             if ns >= st.slow_ns or st.sample_every:
                 st.on_slow_or_sampled(spec, args, kwargs, ns, 0)
         except Exception:
