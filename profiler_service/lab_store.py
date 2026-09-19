@@ -68,7 +68,8 @@ class LabStore:
             s.commit()
 
     def save_trial(self, *, exp_id: str, preset, trial_index: int, phase: str, result: dict, samples: list[dict],
-                   quiet: dict, noisy: bool, other_cores_busy_median: float | None, sampler_overhead_ms: float | None) -> str:
+                   quiet: dict, noisy: bool, other_cores_busy_median: float | None, sampler_overhead_ms: float | None,
+                   other_cores_busy_trial: float | None = None) -> str:
         run_id = uuid.uuid4().hex
         env = result.get("env") or {}
         with self.Session() as s:
@@ -96,6 +97,7 @@ class LabStore:
                               timer_overhead_ns=result["timer_overhead_ns"],
                               measure_start=_dt(result["measure_start"]), measure_end=_dt(result["measure_end"]),
                               quiet_json=json.dumps(quiet), noisy=int(noisy), other_cores_busy_median=other_cores_busy_median,
+                              other_cores_busy_trial=other_cores_busy_trial,
                               sampler_overhead_ms=sampler_overhead_ms, result_json=json.dumps(result)))
             s.add_all(Sample(run_id=run_id, service=LAB_SERVICE, category="cryptographic", metric_name=row["metric_name"],
                              value=row["value"], unit=row["unit"], timestamp=to_utc_naive(row["timestamp"]))

@@ -78,7 +78,8 @@ class TrialResult(Base):
     measure_end: Mapped[datetime] = mapped_column(DateTime)
     quiet_json: Mapped[str] = mapped_column(Text)
     noisy: Mapped[int] = mapped_column(Integer)  # 0/1
-    other_cores_busy_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    other_cores_busy_median: Mapped[float | None] = mapped_column(Float, nullable=True)  # from 100 ms samples (display)
+    other_cores_busy_trial: Mapped[float | None] = mapped_column(Float, nullable=True)  # from cumulative counters (decides noisy)
     sampler_overhead_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_json: Mapped[str] = mapped_column(Text)
 

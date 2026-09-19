@@ -9,7 +9,9 @@ from sqlalchemy import inspect, select
 from profiler_service.db import make_engine, make_sessionmaker
 from profiler_service.lab_store import LabStore
 from profiler_service.models import Experiment, OpStat, Run, Sample, TrialResult
-from vayunx_lab.runner import ExperimentRunner, quiet_check, schedule
+import pytest
+
+from vayunx_lab.runner import ExperimentRunner, other_cores_from_counters, quiet_check, schedule
 
 
 def test_schedule_interleaves_with_alternating_order():
@@ -27,6 +29,14 @@ def test_quiet_check_waits_for_a_quiet_machine():
 def test_quiet_check_flags_noise_instead_of_blocking():
     result = quiet_check(read_cpu=lambda: 90.0, threshold_pct=25.0, max_wait_s=3.0, sleep=lambda s: None, step_s=1.0)
     assert result["quiet"] is False and result["waited_s"] == 3.0 and result["machine_cpu_pct"] == 90.0
+
+
+def test_other_cores_uses_cumulative_counters():
+    # machine busy 38 CPU-s over a 10 s trial, the benchmark itself used 33 CPU-s -> 0.5 cores of other work
+    assert other_cores_from_counters(busy_start_s=100.0, busy_end_s=138.0, proc_cpu_s=33.0, wall_s=10.0) == pytest.approx(0.5)
+    # counter jitter can make the difference slightly negative: clamp to 0
+    assert other_cores_from_counters(busy_start_s=100.0, busy_end_s=132.9, proc_cpu_s=33.0, wall_s=10.0) == 0.0
+    assert other_cores_from_counters(busy_start_s=None, busy_end_s=1.0, proc_cpu_s=1.0, wall_s=1.0) is None
 
 
 def make_store(tmp_path):
@@ -54,6 +64,7 @@ def test_runner_end_to_end_stores_runs_histograms_trials_and_machine_series(tmp_
             trial = s.get(TrialResult, r.run_id)
             assert op.count == trial.ops > 0 and json.loads(op.histogram_json)["count"] == op.count
             assert trial.cpu_s_per_op > 0 and trial.peak_rss_bytes > 0 and trial.timer_overhead_ns > 0
+            assert trial.other_cores_busy_trial is not None and trial.other_cores_busy_trial >= 0
             assert json.loads(trial.quiet_json)["threshold_pct"] == 100.0
             names = {m for (m,) in s.execute(select(Sample.metric_name).where(Sample.run_id == r.run_id).distinct())}
             assert {"proc_cores_busy", "proc_rss_mib", "machine_cpu_pct", "machine_other_cores_busy"} <= names

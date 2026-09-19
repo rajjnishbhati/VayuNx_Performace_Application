@@ -41,6 +41,23 @@ class Cancelled(RuntimeError):
     pass
 
 
+def machine_busy_cpu_s() -> float:
+    """Cumulative CPU-seconds the whole machine spent not idle (all logical CPUs)."""
+    t = psutil.cpu_times()
+    idle = t.idle + getattr(t, "iowait", 0.0)
+    return sum(t) - idle
+
+
+def other_cores_from_counters(busy_start_s: float | None, busy_end_s: float | None, proc_cpu_s: float | None,
+                              wall_s: float | None) -> float | None:
+    """Cores used by work OTHER than the benchmark process during a trial, from cumulative counters:
+    (machine busy CPU-seconds - benchmark CPU-seconds) / wall seconds. Unlike subtracting two instantaneous
+    CPU percentages (sampled over separate 100 ms windows), this does not drift with the benchmark's own load."""
+    if None in (busy_start_s, busy_end_s, proc_cpu_s, wall_s) or not wall_s or wall_s <= 0:
+        return None
+    return max(0.0, (busy_end_s - busy_start_s - proc_cpu_s) / wall_s)
+
+
 def schedule(preset_ids: list[str], trials: int) -> list[tuple[int, str]]:
     out = []
     for t in range(trials):
@@ -140,15 +157,18 @@ class ExperimentRunner:
                 self.store.update_progress(exp_id, i, len(plan), {**current, "stage": "measuring",
                                                                    "started_at": datetime.now(timezone.utc).isoformat()})
                 self.log(f"[{i + 1}/{len(plan)}] trial {trial + 1} · {preset.label}")
-                result, sampler = self._run_trial(preset_id)
+                result, sampler, busy = self._run_trial(preset_id)
                 start, end = datetime.fromisoformat(result["measure_start"]), datetime.fromisoformat(result["measure_end"])
                 during = [v for ts, v in sampler.other if start <= ts <= end]
-                other_median = statistics.median(during) if during else None
-                noisy = (not quiet["quiet"]) or (other_median is not None and other_median > NOISY_OTHER_CORES)
+                other_median = statistics.median(during) if during else None  # time series view only
+                other_trial = other_cores_from_counters(busy.get("start"), busy.get("end"),
+                                                        result["cpu_user_s"] + result["cpu_system_s"], result["wall_s"])
+                noise = other_trial if other_trial is not None else other_median
+                noisy = (not quiet["quiet"]) or (noise is not None and noise > NOISY_OTHER_CORES)
                 self.store.save_trial(exp_id=exp_id, preset=preset, trial_index=trial,
                                       phase="baseline" if preset_id == self.reference else "remediated",
                                       result=result, samples=sampler.rows, quiet=quiet, noisy=noisy,
-                                      other_cores_busy_median=other_median,
+                                      other_cores_busy_median=other_median, other_cores_busy_trial=other_trial,
                                       sampler_overhead_ms=statistics.mean(sampler.overheads_ms) if sampler.overheads_ms else None)
                 self.store.update_progress(exp_id, i + 1, len(plan), {**current, "stage": "done"})
                 if self.on_trial_done:
@@ -167,7 +187,7 @@ class ExperimentRunner:
             self.store.set_status(exp_id, "failed", error=f"unexpected error: {exc!r}")
             return "failed"
 
-    def _run_trial(self, preset_id: str) -> tuple[dict, _TrialSampler]:
+    def _run_trial(self, preset_id: str) -> tuple[dict, "_TrialSampler", dict]:
         cmd = [self.python, "-m", "vayunx_lab.worker", "--preset", preset_id, "--duration", str(self.duration_s),
                "--warmup", str(self.warmup_s), "--concurrency", str(self.concurrency)]
         try:
@@ -185,12 +205,17 @@ class ExperimentRunner:
 
         threading.Thread(target=watch_cancel, daemon=True).start()
         events = []
+        busy: dict = {}  # machine busy CPU-seconds at the worker's measure_start / measure_end
         try:
             for line in proc.stdout:
                 if not line.strip():
                     continue
                 event = json.loads(line)
                 events.append(event)
+                if event["event"] == "measure_start":
+                    busy["start"] = machine_busy_cpu_s()
+                elif event["event"] == "measure_end":
+                    busy["end"] = machine_busy_cpu_s()
                 if event["event"] == "ready" and sampler is None:
                     sampler = _TrialSampler(event["pid"], self.sample_interval_s)
                     sampler.start()
@@ -208,4 +233,4 @@ class ExperimentRunner:
             raise Cancelled()
         if proc.returncode != 0 or not events or events[-1]["event"] != "result":
             raise TrialError(f"worker for {preset_id} failed (exit {proc.returncode}): {proc.stderr.read()[-500:]}")
-        return events[-1], sampler or _TrialSampler(0, self.sample_interval_s)
+        return events[-1], sampler or _TrialSampler(0, self.sample_interval_s), busy
