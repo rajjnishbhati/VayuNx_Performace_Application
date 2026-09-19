@@ -1,7 +1,12 @@
-"""Fake transports for SDK tests - no server needed."""
+"""Fake transports for SDK tests - no server needed - and the database fixture shared by service tests.
 
+`db_url(tmp_path)` returns a fresh, empty database: SQLite by default, PostgreSQL with VAYUNX_TEST_DB=postgres
+(see tests/pgtools.py for where the server comes from)."""
+
+import os
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -116,3 +121,24 @@ def _shutdown_clients(monkeypatch):
     yield
     for c in created:
         c.shutdown(timeout=0)
+
+
+@pytest.fixture(scope="session")
+def _pg_server():
+    if os.environ.get("VAYUNX_TEST_DB") != "postgres":
+        yield None
+        return
+    from pgtools import PgServer
+    server = PgServer()
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def db_url(_pg_server):
+    """Call db_url(tmp_dir) for a new empty database URL."""
+    def make(tmp_dir) -> str:
+        if _pg_server is not None:
+            return _pg_server.new_database()
+        return f"sqlite:///{tmp_dir}/{uuid.uuid4().hex[:8]}.db"
+    return make

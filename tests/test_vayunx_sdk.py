@@ -23,9 +23,8 @@ SECRET = "correct horse battery staple #42"
 
 
 @pytest.fixture(scope="module")
-def live(tmp_path_factory):
-    db = tmp_path_factory.mktemp("db") / "sdk_test.db"
-    app = create_app(f"sqlite:///{db}")
+def live(tmp_path_factory, db_url):
+    app = create_app(db_url(tmp_path_factory.mktemp("db")))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]

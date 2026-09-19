@@ -10,6 +10,11 @@ class Base(DeclarativeBase):
     pass
 
 
+# Row ids of the high-volume tables: BIGINT on Postgres (INTEGER tops out at 2.1 billion rows). SQLite keeps
+# INTEGER, which is its 64-bit rowid alias - a BIGINT primary key would not autoincrement there.
+RowId = BigInteger().with_variant(Integer, "sqlite")
+
+
 class Run(Base):
     """One profiling session against one version of the code."""
 
@@ -88,7 +93,7 @@ class Span(Base):
     __tablename__ = "spans"
     __table_args__ = (UniqueConstraint("run_id", "span_id", name="uq_span_per_run"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(RowId, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
     span_id: Mapped[str] = mapped_column(String(64))
     parent_span_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -106,7 +111,7 @@ class OpStat(Base):
 
     __tablename__ = "op_stats"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(RowId, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
     service: Mapped[str] = mapped_column(String(128))
     category: Mapped[str] = mapped_column(String(16))
@@ -128,7 +133,7 @@ class OpStat(Base):
 class Sample(Base):
     __tablename__ = "samples"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(RowId, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
     service: Mapped[str] = mapped_column(String(128))
     category: Mapped[str] = mapped_column(String(16))

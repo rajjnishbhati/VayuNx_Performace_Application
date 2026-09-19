@@ -13,7 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-service = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6", "opentelemetry-proto==1.44.0"]
+service = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sqlalchemy>=2.0", "pydantic>=2.6", "opentelemetry-proto==1.44.0",
+           "alembic>=1.13"]
+# Postgres driver (VAYUNX_PROFILER_DB_URL=postgresql+psycopg://...)
+postgres = ["psycopg[binary]>=3.2"]
 # the OpenTelemetry-based SDK (`vayunx` package, spec F)
 otel = ["opentelemetry-api==1.44.0", "opentelemetry-sdk==1.44.0", "opentelemetry-exporter-otlp-proto-http==1.44.0",
         "opentelemetry-proto==1.44.0"]
@@ -26,7 +29,12 @@ test = ["pytest>=8", "passlib>=1.7", "PyNaCl>=1.5", "PyJWT>=2.8", "cryptography>
 vayunx-run = "vayunx.__main__:run_main"
 
 [tool.setuptools]
-packages = ["vayunx", "vayunx._bootstrap", "vayunx_profiler_sdk", "profiler_service", "vayunx_lab"]
+packages = ["vayunx", "vayunx._bootstrap", "vayunx_profiler_sdk", "profiler_service", "profiler_service.migrations",
+            "profiler_service.migrations.versions", "vayunx_lab"]
+
+[tool.setuptools.package-data]
+"profiler_service.migrations" = ["alembic.ini", "script.py.mako"]
+vayunx_lab = ["node/worker.mjs", "node/package.json", "node/package-lock.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

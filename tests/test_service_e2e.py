@@ -15,12 +15,12 @@ from vayunx_profiler_sdk.transport import HttpTransport
 
 
 @pytest.fixture(scope="module")
-def server(tmp_path_factory):
-    db = tmp_path_factory.mktemp("db") / "profiler_test.db"
+def server(tmp_path_factory, db_url):
+    db = db_url(tmp_path_factory.mktemp("db"))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    srv = uvicorn.Server(uvicorn.Config(create_app(f"sqlite:///{db}"), host="127.0.0.1", port=port, log_level="warning"))
+    srv = uvicorn.Server(uvicorn.Config(create_app(db), host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
     for _ in range(100):

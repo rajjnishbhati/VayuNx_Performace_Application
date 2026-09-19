@@ -69,8 +69,8 @@ def test_node_worker_refuses_unknown_presets_and_bad_arguments():
 
 
 @needs_node
-def test_experiment_compares_python_and_node_side_by_side(tmp_path):
-    Session = make_sessionmaker(make_engine(f"sqlite:///{tmp_path / 'lab.db'}"))
+def test_experiment_compares_python_and_node_side_by_side(tmp_path, db_url):
+    Session = make_sessionmaker(make_engine(db_url(tmp_path)))
     runner = ExperimentRunner(LabStore(Session), ["sha256", "sha256@node"], trials=1, duration_s=0.3, warmup_s=0.1,
                               quiet_max_wait_s=0)
     exp_id = runner.create()

@@ -56,6 +56,21 @@ python -m venv .venv
 | `VAYUNX_PROFILER_HOST` | `127.0.0.1` | Listen address. |
 | `VAYUNX_PROFILER_PORT` | `8010` | Listen port. |
 
+**PostgreSQL (Phase 4).** Point `VAYUNX_PROFILER_DB_URL` at Postgres, e.g.
+`postgresql+psycopg://vayunx:secret@db-host:5432/vayunx`. The schema is managed by Alembic
+(`profiler_service/migrations`): the Service upgrades the database to the newest revision when it starts,
+and a pre-Alembic SQLite file (Phases 0-3) is brought up to date and stamped, keeping its rows. To move the
+local SQLite data into an **empty** Postgres database (the source is only read, row counts are checked):
+
+```powershell
+.\.venv\Scripts\python.exe -m profiler_service.copy_db --from sqlite:///profiler.db --to postgresql+psycopg://vayunx:secret@db-host:5432/vayunx
+```
+
+Rehearsed on this machine with the real `profiler.db` (98,093 rows: 28 runs, 73,092 spans, 24,842 samples)
+into PostgreSQL 17.6: 6.1 s, identical comparison output. The whole test suite also runs on Postgres:
+`$env:VAYUNX_TEST_DB="postgres"` plus `VAYUNX_PG_BIN` (a folder with `initdb`/`pg_ctl`, e.g. the portable
+EnterpriseDB zip) or `VAYUNX_TEST_PG_URL` (a server you own); see `tests/pgtools.py`.
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)

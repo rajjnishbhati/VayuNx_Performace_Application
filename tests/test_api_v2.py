@@ -19,9 +19,8 @@ from vayunx_profiler_sdk import ProfilerClient
 
 
 @pytest.fixture(scope="module")
-def live(tmp_path_factory):
-    db = tmp_path_factory.mktemp("db") / "v2_test.db"
-    app = create_app(f"sqlite:///{db}")
+def live(tmp_path_factory, db_url):
+    app = create_app(db_url(tmp_path_factory.mktemp("db")))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -177,8 +176,8 @@ def test_unknown_experiment_is_a_friendly_404(live):
     assert status == 422 and "experiment_id" in out["detail"]["fix"]
 
 
-def test_stale_experiments_are_marked_failed_on_restart(tmp_path):
-    Session = make_sessionmaker(make_engine(f"sqlite:///{tmp_path / 'stale.db'}"))
+def test_stale_experiments_are_marked_failed_on_restart(tmp_path, db_url):
+    Session = make_sessionmaker(make_engine(db_url(tmp_path)))
     exp_id = LabStore(Session).create_experiment(["md5", "sha256"], 5, 10.0, 1, "md5", "stale")
     LabStore(Session).set_status(exp_id, "running")
     LabJobs(Session).recover()

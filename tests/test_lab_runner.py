@@ -39,13 +39,13 @@ def test_other_cores_uses_cumulative_counters():
     assert other_cores_from_counters(busy_start_s=None, busy_end_s=1.0, proc_cpu_s=1.0, wall_s=1.0) is None
 
 
-def make_store(tmp_path):
-    engine = make_engine(f"sqlite:///{tmp_path / 'lab.db'}")
+def make_store(url):
+    engine = make_engine(url)
     return LabStore(make_sessionmaker(engine)), make_sessionmaker(engine)
 
 
-def test_runner_end_to_end_stores_runs_histograms_trials_and_machine_series(tmp_path):
-    store, Session = make_store(tmp_path)
+def test_runner_end_to_end_stores_runs_histograms_trials_and_machine_series(tmp_path, db_url):
+    store, Session = make_store(db_url(tmp_path))
     runner = ExperimentRunner(store, ["md5", "sha256"], trials=2, duration_s=0.4, warmup_s=0.05,
                               sample_interval_s=0.05, quiet_threshold_pct=100.0)
     exp_id = runner.create()
@@ -71,8 +71,8 @@ def test_runner_end_to_end_stores_runs_histograms_trials_and_machine_series(tmp_
         assert json.loads(runs[0].env_json)["cpu_model"]
 
 
-def test_runner_can_be_cancelled_between_trials(tmp_path):
-    store, Session = make_store(tmp_path)
+def test_runner_can_be_cancelled_between_trials(tmp_path, db_url):
+    store, Session = make_store(db_url(tmp_path))
     cancel = threading.Event()
     runner = ExperimentRunner(store, ["md5", "sha256"], trials=3, duration_s=0.2, warmup_s=0.0,
                               quiet_threshold_pct=100.0, cancel_event=cancel,
@@ -84,8 +84,8 @@ def test_runner_can_be_cancelled_between_trials(tmp_path):
         assert exp.status == "cancelled" and exp.progress_done == 1
 
 
-def test_runner_reports_worker_failure_plainly(tmp_path):
-    store, Session = make_store(tmp_path)
+def test_runner_reports_worker_failure_plainly(tmp_path, db_url):
+    store, Session = make_store(db_url(tmp_path))
     runner = ExperimentRunner(store, ["md5"], trials=1, duration_s=0.2, quiet_threshold_pct=100.0,
                               python="definitely-not-a-python-executable")
     exp_id = runner.create()
