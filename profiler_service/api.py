@@ -28,6 +28,7 @@ from profiler_service.lab_jobs import LabJobs
 from profiler_service.exports import router as exports_router
 from profiler_service.otlp import router as otlp_router
 from profiler_service.shares import router as shares_router
+from profiler_service.gate import router as gate_router
 from profiler_service.retention import RetentionScheduler
 from profiler_service.models import OpStat, Run, Sample, Span
 from profiler_service.report_html import render_error, render_index, render_report
@@ -77,6 +78,7 @@ def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> Fas
     app.include_router(access_router)  # /v2/projects, /v2/teams, /v2/users
     app.include_router(exports_router)  # /v2/compare.csv, /v2/compare.pdf, /v2/runs.csv
     app.include_router(shares_router)  # /v2/shares, /v2/shared/{token}
+    app.include_router(gate_router)  # /v2/gate (CI)
     app.include_router(otlp_router)  # OTLP/HTTP: POST /v1/traces, POST /v1/metrics
 
     @app.exception_handler(RequestValidationError)

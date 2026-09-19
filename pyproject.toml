@@ -27,6 +27,7 @@ test = ["pytest>=8", "passlib>=1.7", "PyNaCl>=1.5", "PyJWT>=2.8", "cryptography>
 
 [project.scripts]
 vayunx-run = "vayunx.__main__:run_main"
+vayunx-gate = "vayunx.gate:main"
 
 [tool.setuptools]
 packages = ["vayunx", "vayunx._bootstrap", "vayunx_profiler_sdk", "profiler_service", "profiler_service.migrations",

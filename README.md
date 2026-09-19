@@ -147,6 +147,32 @@ comparison and its fixed reference: machine view and PDF/CSV included, nothing e
 - **API:** `POST /v2/shares` (`experiment_id` or `run_ids`, `reference`, `expires_days`), `GET /v2/shares`,
   `GET /v2/shared/{token}` (and `/timeseries`, `.pdf`, `.csv`).
 
+**CI gate (Phase 4).** Fail a build when a measured crypto latency breaks a limit:
+
+```bash
+vayunx-gate --service login-api --variant argon2id --rule "login p95 < 250ms" --rule "login calls >= 100" --junit gate.xml
+# or: python -m vayunx gate ... ; any CI: curl -X POST $VAYUNX_ENDPOINT/v2/gate -H "Authorization: Bearer $VAYUNX_API_TOKEN" #       -H "Content-Type: application/json" -d '{"service":"login-api","rules":["login p95 < 250ms"]}'
+```
+
+- **Rules:** `<name> <stat> <op> <value>`.
+  - The name is a code path the app named with `vayunx.span`/`measure` (e.g. `login`), or a crypto operation.
+  - The stat is `p50`, `p95`, `p99`, `mean` or `max` with a unit (`ns`, `us`, `ms`, `s`), or `calls`.
+  - The operator is `<`, `<=`, `>` or `>=`.
+- **Which run:** the one given by `--run-id`, or the latest run of `--service` and `--variant`.
+- **Exit codes:** 0 pass · 1 fail · 3 no data (not recorded, or fewer than `--min-calls`, default 30; too few to
+  judge is never a pass) · 2 usage or connection error.
+- **Precision:** results near the limit (within the ±6.25 % histogram precision) are marked.
+- **Outputs:** JUnit XML with `--junit`, and a Markdown table in `$GITHUB_STEP_SUMMARY` on GitHub Actions. With
+  sign-in on, set `VAYUNX_API_TOKEN`.
+
+A GitHub Actions step, after the job has run the app under load with `vayunx-run`:
+
+```yaml
+- name: Crypto latency gate
+  env: { VAYUNX_ENDPOINT: "${{ vars.VAYUNX_ENDPOINT }}", VAYUNX_API_TOKEN: "${{ secrets.VAYUNX_API_TOKEN }}" }
+  run: vayunx-gate --service login-api --variant "$GITHUB_SHA" --rule "login p95 < 250ms" --junit gate.xml
+```
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -805,4 +831,9 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
     organisation only" option and no password. They are read-only and expire after at most 90 days. The shared
     page still shows the app's navigation, which asks for sign-in. Confirm this fits the organisation's rules for
     sharing measurement data.
+25. **CI gate wording and judgement.** New labels "PASS", "FAIL" and "NO DATA" sit next to VAYUNX's
+    MATCH/PARTIAL/MISSING and Critical–Low scales. Two choices to confirm:
+    - p95/p99 of large runs come from the histogram (±6.25 %), so a result within that distance of the limit
+      could go either way (such results are marked);
+    - "no data" fails the build (exit 3) rather than passing it.
 

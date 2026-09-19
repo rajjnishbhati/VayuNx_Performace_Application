@@ -69,10 +69,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["run"]:
         return run_main(argv[1:], prog="python -m vayunx run")
+    if argv[:1] == ["gate"]:
+        from vayunx.gate import main as gate_main
+        return gate_main(argv[1:])
     if argv[:1] in (["--version"], ["version"]):
         print(f"vayunx {vayunx.__version__}")
         return 0
-    print("usage: python -m vayunx run [options] -- <command ...>\n       python -m vayunx --version", file=sys.stderr)
+    print("usage: python -m vayunx run [options] -- <command ...>\n"
+          "       python -m vayunx gate --run-id ID --rule \"login p95 < 250ms\"\n"
+          "       python -m vayunx --version", file=sys.stderr)
     return 2
 
 
