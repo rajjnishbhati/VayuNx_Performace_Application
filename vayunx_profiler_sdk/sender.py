@@ -51,7 +51,11 @@ class BackgroundSender:
         self._in_flight = False
         self._flush_now = False
         self._thread: threading.Thread | None = None
-        self._offline = False
+        # "offline" = the service has not yet accepted anything, or the last attempt failed.
+        # (An attempt still in flight - e.g. a slow connection refusal - must not read as "online".)
+        self._ever_reached = False
+        self._last_failed = False
+        self._flush_timed_out = False
         self._counters: dict[str, int] = defaultdict(int)
         self._per_run: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self._warned: set[str] = set()
@@ -86,6 +90,7 @@ class BackgroundSender:
             while self._queue or self._in_flight:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._flush_timed_out = True
                     return False
                 self._cond.wait(remaining)
         return True
@@ -93,7 +98,7 @@ class BackgroundSender:
     def stats(self) -> dict:
         with self._cond:
             out = dict(self._counters)
-            out.update(offline=self._offline, queue_depth=len(self._queue))
+            out.update(offline=(not self._ever_reached) or self._last_failed, queue_depth=len(self._queue))
         for kind in PLURAL.values():
             for suffix in ("recorded", "sent"):
                 out.setdefault(f"{kind}_{suffix}", 0)
@@ -150,7 +155,7 @@ class BackgroundSender:
                 with self._cond:
                     self._in_flight = False
                     if outcome == "retry":
-                        self._offline = True
+                        self._last_failed = True
                         self._cond.notify_all()
                     else:
                         for _ in group:
@@ -163,7 +168,8 @@ class BackgroundSender:
                             self._counters[name] += len(group)
                             if key == "sent":
                                 self._per_run[run_id][PLURAL[kind]] += len(group)
-                        self._offline = False
+                        # "ok" and permanent rejections both prove the service is reachable
+                        self._ever_reached, self._last_failed, self._flush_timed_out = True, False, False
                         backoff = self.backoff_initial_s
                         self._cond.notify_all()
                 if outcome == "retry":
@@ -221,8 +227,10 @@ class BackgroundSender:
             log.warning(message)
 
     def _at_exit(self) -> None:
+        # Skip if the last flush already timed out and nothing was delivered since: waiting again
+        # would only double the host's exit delay for data that cannot be sent.
         try:
-            if self._queue:
+            if self._queue and not self._flush_timed_out:
                 self.flush(self.flush_timeout_s)
         except Exception:
             pass

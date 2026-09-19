@@ -128,14 +128,16 @@ The interactive schema is at `/docs` (OpenAPI).
 |---|---|---|
 | `GET /healthz` | - | `{"status":"ok","version":...,"wire_schema_version":"1"}` |
 | `POST /v1/runs` | `RunCreate` | 201 `Run`. 409 if `run_id` already exists. |
-| `GET /v1/runs?service=&phase=&limit=` | - | `[Run]`, newest first |
-| `GET /v1/runs/{run_id}` | - | `Run` (with `span_count`, `sample_count`) |
+| `GET /v1/runs?service=&phase=&limit=&offset=` | - | `[Run]`, newest first; `limit` 1–1000 (default 200), `offset` ≥ 0 |
+| `GET /v1/runs/{run_id}` | - | `Run` (with `span_count`, `sample_count`, `op_stat_count`) |
 | `POST /v1/runs/{run_id}/complete` | `{}` or `{"completed_at": ts}` | `Run`. After this, the run accepts no more spans/samples (409). |
 | `POST /v1/spans` | one `Span` **or** an array of `Span` (≤ 10,000) | 201 `{"accepted": n}`. The batch is all-or-nothing. |
 | `POST /v1/samples` | one `Sample` **or** an array of `Sample` (≤ 10,000) | 201 `{"accepted": n}` |
+| `POST /v1/op-stats` | one `OpStats` **or** an array (≤ 10,000) | 201 `{"accepted": n}`. Fast-path summaries (added in Phase 1; additive). |
+| `GET /v1/runs/{run_id}/op-stats` | - | `[OpStats]` for the run, oldest interval first |
 | `GET /v1/comparison?baseline_run_id=&remediated_run_id=` | - | Comparison report JSON (below), in one call |
-| `GET /report?baseline_run_id=&remediated_run_id=` | - | HTML report |
-| `GET /` | - | HTML run list + pair picker |
+| `GET /report?baseline_run_id=&remediated_run_id=` | - | HTML report. Errors are a plain HTML page (cause, fix, link back), not JSON. |
+| `GET /?page=&page_size=` | - | HTML run list (paged, 50 per page by default) + pair picker |
 
 **Errors** use `{"detail": ...}`:
 - **404:** unknown run.
@@ -161,15 +163,30 @@ The interactive schema is at `/docs` (OpenAPI).
 // Sample
 { "run_id": "…", "service": "crypto-demo", "category": "cryptographic",
   "metric_name": "memory_mb", "value": 97.4, "unit": "MiB", "timestamp": "2026-09-17T10:15:30.200000Z" }
+
+// OpStats  (one interval of a fast-path operation: many calls aggregated in the SDK)
+{ "run_id": "…", "service": "crypto-demo", "category": "cryptographic",
+  "op_name": "md5_hash", "attributes": { "crypto.algorithm": "MD5" },
+  "interval_start": "…Z", "interval_end": "…Z",
+  "count": <int ≥ 1>, "sum_ns": <int>, "min_ns": <int>, "max_ns": <int>,   // exact
+  "p50_ns": <int>, "p95_ns": <int>, "p99_ns": <int>,                      // from the histogram (±6.25 %)
+  "histogram": { "scheme": "log2x8-ns", "count": <same as count>, "sum_ns": <same as sum_ns>,
+                 "min_ns": <int>, "max_ns": <int>,
+                 "buckets": { "<bucket index>": <count>, ... } },          // counts must add up to count
+  "sdk_overhead_ns": <float> }                                           // SDK's own measured cost per call
 ```
 
+The histogram scheme `log2x8-ns` is fully specified in `vayunx_profiler_sdk/histogram.py` (0–7 ns exact; above that, 8 equal sub-buckets per power of two, so any SDK can produce identical buckets).
+
 **Rules for SDK authors:**
-1. **Create the run first** (`POST /v1/runs`) and use the returned `run_id`.
+1. **Create the run first** (`POST /v1/runs`). Generating `run_id` on the client (recommended) means starting a run needs no round trip, so the host app never waits on the service.
 2. **Span IDs.** Generate a unique `span_id` per span, and set `parent_span_id` to the enclosing open span's ID.
 3. **Ordering.** Spans may arrive in any order and in any batch. Children usually end, and are sent, before their parents.
 4. **Duration.** `duration_ms` is authoritative. Measure it with a monotonic clock, and use wall-clock time only for `start_time`, setting `end_time = start_time + duration`. If `end_time − start_time` differs from `duration_ms` by more than max(1 ms, 1 %), the report shows a warning.
 5. **Flush, then complete.** Flush all buffered spans and samples, then call `/complete`. Anything sent after completion is rejected.
 6. **Metadata.** Put environment info in `metadata`. The report warns when `hostname`, `platform`, `runtime` or `cpu_count` differ between the two compared runs.
+7. **Be fail-safe** (the Python SDK's contract; see [SDK safety](#sdk-safety)). Never raise into the host application, never send on the host's thread, bound every buffer, and never record secrets.
+8. **Retry only what can succeed.** Retry connection failures, timeouts, 5xx, 408 and 429 with backoff. Treat other 4xx answers as permanent: drop that batch and count it. A 409 on `POST /v1/runs` or `/complete` means an earlier attempt already succeeded.
 
 ### Comparison report JSON
 
@@ -185,14 +202,22 @@ The interactive schema is at `/docs` (OpenAPI).
                          "status": "matched" | "baseline_only" | "remediated_only",
                          "baseline": {count,total_ms,mean_ms,min_ms,max_ms} | null, "remediated": {...} | null,
                          "delta_total_ms", "pct_total", "delta_mean_ms", "pct_mean",      // null unless matched
+                         "change_per_call": "about 30,000× slower",                       // null unless matched
                          "category_baseline", "category_remediated", "attributes_baseline", "attributes_remediated", "notes": [...] } ],
   "sampling_comparison": [ { "metric_name", "category", "unit", "status", "baseline": {count,avg,min,max} | null, "remediated": ...,
-                             "delta_avg", "pct_avg", "delta_min", "pct_min", "delta_max", "pct_max", "notes": [...] } ],
+                             "delta_avg", "pct_avg", "delta_min", "pct_min", "delta_max", "pct_max",
+                             "change_avg": "3.7× higher", "change_peak": "2.9× more", "notes": [...] } ],
   "summary": "<plain-language sentence generated from the numbers above>",
   "warnings": [...], "thresholds": { "material_change_pct": 5.0, "min_samples_per_metric": 3 } }
 ```
 
 The `flame_graph` trees are in d3-flame-graph's `{name, value, children}` shape, with `value` as the **inclusive** duration in ms.
+
+**Number formatting** (`profiler_service/formatting.py`, used by the summary, the `change_*` fields and the HTML):
+- **Units:** durations and sizes choose their own unit and show 3 significant digits (`580 ns`, `1.10 µs`, `38.3 ms`, `3.24 s`; `512 B`, `99.4 MiB`).
+- **Changes:** a change of 2× or more in either direction is a ratio (`2.5× slower`, `about 30,000× slower`, `2.0× faster`). A smaller one is a percentage (`-34.4%`). Ratios of 100× or more are rounded to 2 significant digits and marked "about".
+- **CPU:** shown as **cores busy** = CPU % ÷ 100, because psutil's CPU % is a share of **one** core.
+- **Neutral words:** "slower" and "more" are descriptions, not verdicts. For password hashing, slower is the point.
 
 ## Python SDK
 
@@ -208,14 +233,26 @@ with profiler.run(label="md5-baseline", phase="baseline") as run:
             ...
         with run.span("compute_digest", category="cryptographic"):
             ...
+    # Fast primitives (e.g. MD5, ~1 µs): aggregate into a histogram instead of one span per call
+    md5 = run.op("md5_hash", attributes={"crypto.algorithm": "MD5"})
+    for pw in passwords:
+        with md5:
+            hashlib.md5(pw).digest()
     profiler.stop_sampling()      # optional: run exit stops sampling for that run anyway
+
+print(profiler.stats())           # recorded / sent / dropped counters, offline flag, measured op overhead
 ```
 
 - **Nesting is automatic.** The innermost open span is tracked in a `ContextVar`, so a span opened inside another becomes its child.
   This tracking is per thread / asyncio task. A span opened in a **different thread** becomes a root.
-- **Batching.** Spans are buffered and sent in batches (every 500 spans, and at run exit).
-  On exit the run stops its sampler, flushes, and calls `/complete`, even if the block raised.
+- **Background delivery.** Spans, samples and op summaries go into a bounded queue and are sent by one background thread, in batches of 500 or every second.
+  On exit the run stops its sampler, flushes (for at most 2 s), and queues `/complete`, even if the block raised.
   An exception inside a span adds `attributes.error = "<ExceptionType>"` and is never swallowed.
+  Delivery is asynchronous: `run.spans_sent` / `run.samples_sent` / `run.op_stats_sent` are the counts the Service accepted, final after the run exits.
+- **Spans vs ops.** Use `run.span()` for work that takes milliseconds, `run.op()` for fast primitives.
+  An op records each call into a latency histogram (count, sum, min, max, p50/p95/p99) and sends one summary per second.
+  It also emits a full span for slow calls (`slow_ms`, default 10 ms) and, optionally, for every Nth call (`span_sample_every`).
+  An op can be shared across threads but is not re-entrant, so don't nest an op inside itself.
 - **Sampling** runs a daemon thread that samples **the current process** with psutil. Supported metrics:
 
   | Metric | Unit | Meaning |
@@ -225,10 +262,35 @@ with profiler.run(label="md5-baseline", phase="baseline") as run:
   | `num_threads` | `count` | Thread count |
 
   Memory is sampled at start, each interval and at stop. CPU is sampled each interval and at stop (the start call only primes psutil).
-  Samples are buffered and sent about every 2 s. Sampling errors never crash the application; `stop_sampling()` returns `{"samples_sent", "errors"}`.
-- **Overhead.** The sampler thread and HTTP flushes run inside the measured process and are included in what they measure. This is small but not zero.
+  Samples go through the same background sender. Sampling errors never crash the application; `stop_sampling()` returns `{"samples_recorded", "errors"}`.
 - **Dependencies.** HTTP uses only the standard library (`urllib`); the only third-party dependency is `psutil`.
 - **Manual only.** There is no automatic instrumentation: no monkey-patching or bytecode hooks.
+
+### SDK safety
+
+The profiler must never break or slow down the application it measures. Every rule below has a test in `tests/test_sdk_safety.py` or `tests/test_sdk_privacy.py`.
+
+| Rule | Behaviour |
+|---|---|
+| Never raise into host code | Internal failures are logged once (logger `vayunx_profiler`) and counted in `stats()["internal_errors"]`. Only API misuse raises, immediately: an invalid phase, category or metric, a nested run, or `start_sampling()` outside a run. |
+| Never mask the host's exception | Run and span exit always return the host's own exception unchanged, even while the Service is down. |
+| No network I/O on the caller's thread | Only the `vayunx-profiler-sender` thread talks to the Service. Starting a run never blocks, because run IDs are generated client-side. |
+| Service unreachable | Offline mode: data stays queued and is retried with exponential backoff (0.5 s → 30 s). `stats()["offline"]` is True until the Service has accepted something, and whenever the last attempt failed. |
+| Bounded memory | At most `max_queue` (default 10,000) data items are queued. Beyond that, new items are dropped and counted (`dropped_spans`, `dropped_samples`, `dropped_op_stats`). |
+| Bounded exit delay | Run exit flushes for at most `flush_timeout_s` (default 2 s). Process exit flushes again only if that earlier flush did not already time out. |
+| Permanent rejections | Other 4xx answers drop the batch and increment `send_errors`. |
+| Thread-safe | Shared counters and queues are lock-protected; tested with 8 threads × 500 spans. |
+| Privacy | Byte values, strings over 256 characters, and attribute or metadata keys that look secret (password, key, salt, token, hash, digest, plaintext, …) are dropped and counted (`dropped_attributes`). Size and parameter keys such as `crypto.key_bits` and `crypto.input_bytes` are allowed. |
+
+**Measured overhead** (Intel Core i5-8400H, 4 cores / 8 threads, Windows 11, Python 3.13.9; one run each, so treat these as indicative):
+
+| Path | Extra time per call | Notes |
+|---|---|---|
+| `run.op()` | ~1.8 µs | MD5 itself took 0.76 µs. The SDK also calibrates this once per client and reports it (`stats()["op_overhead_ns"]`, `sdk_overhead_ns` in each summary). |
+| `run.span()`, caller thread only | ~9.0 µs | Was 13.9 µs before Phase 1. |
+| `run.span()`, including the sender thread's work | ~16.4 µs | The sender serialises spans on another thread but shares Python's GIL, so a tight span loop pays for both. |
+
+For primitives that take about a microsecond, use `run.op()`: a span costs many times the work it measures.
 
 ## How comparison works
 
@@ -295,7 +357,11 @@ with profiler.run(label="md5-baseline", phase="baseline") as run:
    - "indicative only" for low sample counts
 
    Reconcile these with the existing taxonomy before this feeds any VAYUNX findings or Impact Analysis output.
-8. **Wire-format additions beyond the original field list.** Three additions need confirming as the intended contract:
+8. **Wire-format additions beyond the original field list.** Phase 1 added two more that need confirming alongside the three below:
+   - `POST /v1/op-stats` / `GET /v1/runs/{run_id}/op-stats`, with the `log2x8-ns` histogram scheme
+   - client-generated `run_id` as the recommended way to start a run
+
+   The three original additions:
    - `span_id`, which `parent_span_id` needs something to refer to
    - optional span `attributes`, used to keep span names identical across algorithm swaps
    - optional `metadata` on runs

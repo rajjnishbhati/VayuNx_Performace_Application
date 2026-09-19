@@ -69,9 +69,9 @@ def main(argv=None) -> tuple[str, str]:
                     with run.span("read_file", category="general", attributes={"chunk_size_bytes": chunk_size}):
                         if read_file(run, path, chunk_size) != expected:
                             raise SystemExit("short read")
-                stats = profiler.stop_sampling()
+                profiler.stop_sampling()
             run_ids[phase] = run.run_id
-            print(f"{phase}: spans_sent={run.spans_sent} samples_sent={stats['samples_sent']}")
+            print(f"{phase}: spans_sent={run.spans_sent} samples_sent={run.samples_sent}")
     finally:
         os.remove(path)
 

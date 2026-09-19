@@ -78,9 +78,10 @@ def main(argv=None) -> str:
                 if not ok:
                     raise SystemExit(f"login failed for {username}")
 
-        stats = profiler.stop_sampling()
+        profiler.stop_sampling()
 
-    print(f"spans_sent={run.spans_sent} samples_sent={stats['samples_sent']}")
+    # delivery is asynchronous; run exit flushes (bounded), so these are the service-accepted counts
+    print(f"spans_sent={run.spans_sent} samples_sent={run.samples_sent} sdk_stats={profiler.stats()}")
     print(f"RUN_ID={run.run_id}")
     return run.run_id
 

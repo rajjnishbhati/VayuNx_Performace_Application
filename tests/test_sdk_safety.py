@@ -83,6 +83,12 @@ def test_run_exit_flush_has_a_hard_timeout():
         with run.span("work"):
             pass
     assert time.monotonic() - started < 1.5
+    # the first attempt is still hanging: that must read as offline, not online
+    assert c.stats()["offline"] is True
+    # process-exit flush must not wait a second time for data that just timed out
+    started = time.monotonic()
+    c._sender._at_exit()
+    assert time.monotonic() - started < 0.1
 
 
 def test_offline_then_recovers_and_delivers_in_order(fast_opts):

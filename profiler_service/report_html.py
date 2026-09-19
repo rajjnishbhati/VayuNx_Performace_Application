@@ -47,7 +47,23 @@ def _pct(v) -> str:
     return "-" if v is None else f"{v:+.1f}%"
 
 
-def render_index(runs: list[dict]) -> str:
+def render_error(status: int, cause: str, fix: str) -> str:
+    title = {404: "Not found", 422: "These runs can't be compared"}.get(status, "Something went wrong")
+    body = (f"<h1>{escape(title)}</h1><div class='card warn'><p><b>What happened:</b> {escape(cause)}</p>"
+            f"<p><b>How to fix it:</b> {escape(fix)}</p></div>"
+            "<p><a href=\"/\">← Back to all runs</a></p>")
+    return _page(title, body)
+
+
+def _pager(page: int, page_size: int, total: int) -> str:
+    pages = max(1, -(-total // page_size))
+    prev_link = f"<a href='/?page={page - 1}&amp;page_size={page_size}'>← Previous</a>" if page > 1 else ""
+    next_link = f"<a href='/?page={page + 1}&amp;page_size={page_size}'>Next →</a>" if page < pages else ""
+    return f"<p class='muted'>{prev_link} Page {page} of {pages} ({total} runs) {next_link}</p>"
+
+
+def render_index(runs: list[dict], page: int = 1, page_size: int = 50, total: int | None = None) -> str:
+    total = len(runs) if total is None else total
     services = sorted({r["service"] for r in runs})
     rows = "".join(
         f"<tr><td>{escape(r['service'])}</td><td><span class='badge {escape(r['phase'])}'>{escape(r['phase'])}</span></td>"
@@ -66,7 +82,8 @@ def render_index(runs: list[dict]) -> str:
         f"<label>Baseline run<br><select name='baseline_run_id' required>{options('baseline')}</select></label>"
         f"<label>Remediated run<br><select name='remediated_run_id' required>{options('remediated')}</select></label>"
         "<div><button type='submit'>Open report</button> <span class='muted'>Both runs must belong to the same service.</span></div></form></div>"
-        f"<h2>Runs ({len(runs)}) · services: {escape(', '.join(services)) or 'none'}</h2>"
+        f"<h2>Runs · services on this page: {escape(', '.join(services)) or 'none'}</h2>"
+        f"{_pager(page, page_size, total)}"
         "<div class='card scroll'><table><tr><th>Service</th><th>Phase</th><th>Label</th><th>Run ID</th><th>Spans</th><th>Samples</th><th>Created (UTC)</th><th>State</th></tr>"
         f"{rows or '<tr><td colspan=8 class=muted>No runs yet - run demos/run_demo.py</td></tr>'}</table></div>"
         "<p class='muted'>API docs: <a href='/docs'>/docs</a> · wire format: README.md</p>")

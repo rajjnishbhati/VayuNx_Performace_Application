@@ -20,7 +20,7 @@ from profiler_service import WIRE_SCHEMA_VERSION, __version__, config
 from profiler_service.comparison import SampleRec, SpanRec, build_report
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
 from profiler_service.models import OpStat, Run, Sample, Span
-from profiler_service.report_html import render_index, render_report
+from profiler_service.report_html import render_error, render_index, render_report
 from profiler_service.schemas import IngestResult, OpStatsIn, RunComplete, RunCreate, RunOut, SampleIn, SpanIn
 
 
@@ -51,6 +51,9 @@ def create_app(db_url: str | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path in HTML_ROUTES:  # people, not programs: plain page with a way back
+            problems = "; ".join(f"{'.'.join(str(p) for p in e.get('loc', [])[1:])}: {e.get('msg')}" for e in exc.errors())
+            return html_error(422, f"The request is incomplete or invalid ({problems}).")
         # Default handler echoes the offending input; NaN/Infinity would make that response itself
         # unserialisable (HTTP 500). Replace non-finite floats so bad input always gets a clean 422.
         def safe(v):
@@ -124,13 +127,13 @@ def create_app(db_url: str | None = None) -> FastAPI:
 
     @app.get("/v1/runs")
     def list_runs(session: SessionDep, service: str | None = None, phase: str | None = None,
-                  limit: int = Query(200, ge=1, le=1000)) -> list[RunOut]:
-        q = select(Run).order_by(Run.created_at.desc()).limit(limit)
+                  limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0)) -> list[RunOut]:
+        q = select(Run).order_by(Run.created_at.desc()).limit(limit).offset(offset)
         if service:
             q = q.where(Run.service == service)
         if phase:
             q = q.where(Run.phase == phase)
-        return [run_out(session, r) for r in session.scalars(q)]
+        return runs_out(session, list(session.scalars(q)))
 
     @app.get("/v1/runs/{run_id}")
     def get_run(run_id: str, session: SessionDep) -> RunOut:
@@ -235,11 +238,23 @@ def create_app(db_url: str | None = None) -> FastAPI:
 
     @app.get("/report", response_class=HTMLResponse)
     def report(session: SessionDep, baseline_run_id: str, remediated_run_id: str):
-        return render_report(comparison_payload(session, baseline_run_id, remediated_run_id))
+        try:
+            return render_report(comparison_payload(session, baseline_run_id, remediated_run_id))
+        except HTTPException as exc:
+            return html_error(exc.status_code, str(exc.detail))
 
     @app.get("/", response_class=HTMLResponse)
-    def index(session: SessionDep):
-        return render_index([run_out(session, r) for r in session.scalars(select(Run).order_by(Run.created_at.desc()).limit(500))])
+    def index(session: SessionDep, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500)):
+        total = session.scalar(select(func.count()).select_from(Run))
+        runs = list(session.scalars(select(Run).order_by(Run.created_at.desc()).limit(page_size).offset((page - 1) * page_size)))
+        return render_index(runs_out(session, runs), page=page, page_size=page_size, total=total)
+
+    def html_error(status: int, cause: str) -> HTMLResponse:
+        fixes = {404: "Check the run IDs, or pick both runs from the list of runs.",
+                 422: "Pick one baseline run and one remediated run that belong to the same service."}
+        return HTMLResponse(render_error(status, cause, fixes.get(status, "Go back and try again.")), status_code=status)
+
+    HTML_ROUTES = {"/", "/report"}
 
     return app
 
