@@ -52,7 +52,7 @@ export class OpHistograms {
   }
 }
 
-export function post(url: string, body: string, timeoutMs: number): Promise<"ok" | "rejected" | "failed"> {
+export function post(url: string, body: string, timeoutMs: number, extraHeaders: Record<string, string> = {}): Promise<"ok" | "rejected" | "failed"> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (r: "ok" | "rejected" | "failed") => { if (!settled) { settled = true; resolve(r); } };
@@ -61,7 +61,7 @@ export function post(url: string, body: string, timeoutMs: number): Promise<"ok"
       const mod = u.protocol === "https:" ? https : http;
       const req = mod.request(u, {
         method: "POST", agent: false,
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), ...extraHeaders },
       }, (res) => {
         res.resume();
         const code = res.statusCode ?? 0;
@@ -85,7 +85,7 @@ export class Shipper {
 
   constructor(private url: string, private resource: Attrs, private ophists: OpHistograms,
               private counters: Record<string, number>, private intervalMs: number, private timeoutMs: number,
-              private maxPending: number) {}
+              private maxPending: number, private headers: Record<string, string> = {}) {}
 
   start(): void {
     this.timer = setInterval(() => { void this.tick(Date.now() + this.timeoutMs); }, this.intervalMs);
@@ -109,7 +109,7 @@ export class Shipper {
         }
       }
       while (this.pending.length && Date.now() < deadline) {
-        const r = await post(this.url, this.pending[0], Math.max(100, deadline - Date.now()));
+        const r = await post(this.url, this.pending[0], Math.max(100, deadline - Date.now()), this.headers);
         if (r === "failed") {
           this.counters.offline_attempts = (this.counters.offline_attempts ?? 0) + 1;
           return false;

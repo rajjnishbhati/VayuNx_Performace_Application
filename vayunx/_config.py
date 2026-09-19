@@ -30,6 +30,10 @@ class Config:
     gauges: bool
     hooks: bool
     max_pending_exports: int = 60
+    api_token: str | None = None  # VAYUNX_API_TOKEN: only when the Service requires sign-in
+
+    def auth_headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_token}"} if self.api_token else {}
 
 
 def load(**overrides) -> Config:
@@ -50,6 +54,7 @@ def load(**overrides) -> Config:
         flush_timeout_s=float(overrides.get("flush_timeout_s") or _num("VAYUNX_FLUSH_TIMEOUT_S", 2.0)),
         gauges=overrides.get("gauges", env.get("VAYUNX_GAUGES", "1") != "0"),
         hooks=overrides.get("hooks", env.get("VAYUNX_HOOKS", "1") != "0"),
+        api_token=overrides.get("api_token") or env.get("VAYUNX_API_TOKEN") or None,
     )
     return cfg
 

@@ -18,6 +18,8 @@ export interface InitOptions {
   hooks?: boolean;
   /** register our TracerProvider as the global one when none is set, so framework spans (Next.js) are exported too */
   registerGlobal?: boolean;
+  /** VAYUNX_API_TOKEN: only needed when the Service requires sign-in */
+  apiToken?: string;
 }
 
 export interface Config {
@@ -34,6 +36,11 @@ export interface Config {
   hooks: boolean;
   registerGlobal: boolean;
   maxPendingExports: number;
+  apiToken?: string;
+}
+
+export function authHeaders(cfg: { apiToken?: string }): Record<string, string> {
+  return cfg.apiToken ? { Authorization: `Bearer ${cfg.apiToken}` } : {};
 }
 
 function num(name: string, fallback: number): number {
@@ -62,6 +69,7 @@ export function load(o: InitOptions = {}): Config {
     hooks: o.hooks ?? env.VAYUNX_HOOKS !== "0",
     registerGlobal: o.registerGlobal ?? true,
     maxPendingExports: 60,
+    apiToken: o.apiToken ?? (env.VAYUNX_API_TOKEN || undefined),
   };
 }
 

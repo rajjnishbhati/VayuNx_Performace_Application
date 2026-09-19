@@ -2,6 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 sqlalchemy>=2.0
 alembic>=1.13
+PyJWT[crypto]>=2.8
 psycopg[binary]>=3.2
 pydantic>=2.6
 psutil>=5.9

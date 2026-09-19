@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 from profiler_service import WIRE_SCHEMA_VERSION, __version__, config
 from profiler_service.comparison import SampleRec, SpanRec, build_report
 from profiler_service.api_v2 import router as v2_router
+from profiler_service.auth import AuthConfig
+from profiler_service.auth import install as install_auth
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
 from profiler_service.lab_jobs import LabJobs
 from profiler_service.otlp import router as otlp_router
@@ -39,8 +41,9 @@ def get_session(request: Request):
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def create_app(db_url: str | None = None) -> FastAPI:
+def create_app(db_url: str | None = None, auth: AuthConfig | None = None) -> FastAPI:
     db_url = db_url or config.DB_URL
+    auth = auth or AuthConfig.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -54,7 +57,7 @@ def create_app(db_url: str | None = None) -> FastAPI:
 
     app = FastAPI(title="VAYUNX Profiler Service", version=__version__, lifespan=lifespan,
                   description="Language-agnostic span/sample ingestion, baseline-vs-remediated comparison and flame-graph reports. "
-                              "Demo build - no auth.")
+                              "Sign-in (OIDC) and API tokens when VAYUNX_AUTH=oidc; open otherwise.")
     app.include_router(v2_router)
     app.include_router(otlp_router)  # OTLP/HTTP: POST /v1/traces, POST /v1/metrics
 
@@ -247,6 +250,7 @@ def create_app(db_url: str | None = None) -> FastAPI:
         return HTMLResponse(render_error(status, cause, fixes.get(status, "Go back and try again.")), status_code=status)
 
     HTML_ROUTES = {"/", "/report"}
+    install_auth(app, auth, HTML_ROUTES)  # last: its middleware wraps every route above
 
     return app
 

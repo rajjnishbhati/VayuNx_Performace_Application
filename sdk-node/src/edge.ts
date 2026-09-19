@@ -23,10 +23,12 @@ export interface EdgeOptions {
   variant?: string;
   runId?: string;
   exportIntervalMs?: number;
+  apiToken?: string;
 }
 
 interface EdgeState {
   url: string;
+  headers: Record<string, string>;
   resource: Attrs;
   intervalMs: number;
   hists: Map<string, [Attrs, LatencyHistogram]>;
@@ -78,7 +80,7 @@ export async function flushEdge(timeoutMs = 2000): Promise<boolean> {
   s.startMs = s.lastFlush = Date.now();
   try {
     const r = await fetch(s.url, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", ...s.headers },
       body: buildRequest(s.resource, startMs, s.startMs, series), signal: AbortSignal.timeout(timeoutMs),
     });
     return r.ok;
@@ -94,7 +96,9 @@ export function initEdge(opts: EdgeOptions = {}): Record<string, unknown> {
     const subtle = (globalThis.crypto as { subtle?: object } | undefined)?.subtle;
     if (!subtle) return { initialized: false, reason: "no Web Crypto in this runtime" };
     const runId = opts.runId ?? env("VAYUNX_RUN_ID");
+    const token = opts.apiToken ?? env("VAYUNX_API_TOKEN");
     st = {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       url: `${(opts.endpoint ?? env("VAYUNX_ENDPOINT") ?? "http://127.0.0.1:8010").replace(/\/+$/, "")}/v1/metrics`,
       resource: {
         "service.name": opts.service ?? env("VAYUNX_SERVICE") ?? "edge-app", "vayunx.variant": opts.variant ?? env("VAYUNX_VARIANT"),

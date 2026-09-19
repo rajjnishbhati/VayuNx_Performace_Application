@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import type { Me } from "@/lib/types";
 import { useStoredString, writeStored } from "@/lib/useStored";
 
 const NAV = [
@@ -26,6 +27,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const stored = useStoredString("vx-theme", "system");
   const theme: Theme = stored === "light" || stored === "dark" ? stored : "system";
   const [machine, setMachine] = useState<string>("This machine");
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => { api.me().then(setMe).catch(() => undefined); }, []);
 
   useEffect(() => {
     // The machine selector shows where Lab numbers come from (the Service's host). Multi-machine comes with Phase 4.
@@ -61,6 +64,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <option value="dark">Dark</option>
           </select>
         </label>
+        {me?.auth === "oidc" && me.signed_in && (
+          <span className="row" style={{ gap: 8 }}>
+            <span className="muted" style={{ fontSize: 13 }}>{me.name || me.email}{me.is_admin ? " · admin" : ""}</span>
+            {/* a full reload on purpose, so no signed-in state survives in memory */}
+            {/* eslint-disable-next-line @next/next/no-location-assign-relative-destination */}
+            <button onClick={() => { api.signOut().finally(() => window.location.assign("/")); }}>Sign out</button>
+          </span>
+        )}
       </header>
       <nav className="leftnav" aria-label="Main">
         {NAV.map((n) => (

@@ -1,5 +1,5 @@
 // Typed client for the Profiler Service. Requests go to /api/*, which next.config.ts rewrites to the service.
-import type { CompareResult, Experiment, Page, Preset, RunItem, Timeseries } from "./types";
+import type { ApiTokenItem, CompareResult, Experiment, Me, Page, Preset, RunItem, Timeseries } from "./types";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public fix: string) {
@@ -24,6 +24,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw SERVICE_DOWN;
   }
   const body = await res.json().catch(() => null);
+  if (res.status === 401 && body?.detail?.login_url && typeof window !== "undefined") {
+    // sign-in required (VAYUNX_AUTH=oidc): go through the identity provider and come back to this page.
+    // A full navigation on purpose: /api/auth/login is the Service (proxied), not a Next.js page.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign(`/api${body.detail.login_url}?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    throw new ApiError(401, "Signing in…", "");
+  }
   if (!res.ok) {
     const d = body?.detail;
     if (d && typeof d === "object" && "error" in d) throw new ApiError(res.status, d.error, d.fix ?? "");
@@ -46,4 +53,13 @@ export const api = {
     request<CompareResult>(`/v2/compare?run_ids=${ids.map(encodeURIComponent).join(",")}${reference ? `&reference=${encodeURIComponent(reference)}` : ""}`),
   timeseries: (id: string) => request<Timeseries>(`/v2/experiments/${encodeURIComponent(id)}/timeseries`),
   runs: (qs = "") => request<Page<RunItem>>(`/v2/runs${qs}`),
+  me: () => request<Me>("/auth/me"),
+  signOut: () => request<{ signed_out: boolean }>("/auth/logout", { method: "POST" }),
+  tokens: () => request<ApiTokenItem[]>("/v2/tokens"),
+  createToken: (name: string) =>
+    request<ApiTokenItem & { token: string }>("/v2/tokens", { method: "POST", body: JSON.stringify({ name }) }),
+  revokeToken: async (id: string) => {
+    const r = await fetch(`/api/v2/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!r.ok) throw new ApiError(r.status, "Could not revoke the token.", "Reload the page and try again.");
+  },
 };

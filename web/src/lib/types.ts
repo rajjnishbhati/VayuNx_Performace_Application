@@ -169,3 +169,13 @@ export type Timeseries = {
 };
 
 export type Page<T> = { items: T[]; total: number; limit: number; offset: number };
+
+/** GET /auth/me: sign-in state (auth "off" = open, no accounts). */
+export type Me = {
+  auth: "off" | "oidc"; signed_in: boolean; login_url?: string; user_id?: string; email?: string | null;
+  name?: string | null; is_admin?: boolean; via?: "session" | "token";
+};
+
+export type ApiTokenItem = {
+  token_id: string; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked: boolean; user_id: string;
+};

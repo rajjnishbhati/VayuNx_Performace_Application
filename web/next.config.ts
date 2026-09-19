@@ -5,6 +5,8 @@ import type { NextConfig } from "next";
 const API_URL = process.env.VAYUNX_API_URL ?? "http://127.0.0.1:8010";
 
 const nextConfig: NextConfig = {
+  // A second UI instance (e.g. a sign-in test next to the everyday one) needs its own build folder.
+  distDir: process.env.VAYUNX_NEXT_DIST ?? ".next",
   // Dev server only: allow opening the UI as http://127.0.0.1:3000 (Next 16 blocks non-localhost dev origins,
   // which otherwise stops the page from hydrating). Has no effect on `next build` / `next start`.
   allowedDevOrigins: ["127.0.0.1"],

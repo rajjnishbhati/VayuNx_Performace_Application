@@ -44,7 +44,7 @@ export class State {
     const attrs = resourceAttrs(cfg, VERSION);
     this.tracing = tracing(cfg, attrs, VERSION);
     this.shipper = new Shipper(`${cfg.endpoint}/v1/metrics`, attrs, this.ophists, this.counters, cfg.exportIntervalMs,
-      cfg.flushTimeoutMs, cfg.maxPendingExports);
+      cfg.flushTimeoutMs, cfg.maxPendingExports, config.authHeaders(cfg));
     if (cfg.gauges) this.meters = gauges(cfg, attrs, () => this.active());
   }
 

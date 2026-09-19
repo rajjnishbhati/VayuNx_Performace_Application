@@ -157,7 +157,7 @@ class Shipper(threading.Thread):
             return False
 
     def _post(self, body: bytes, timeout: float) -> bool:
-        req = urllib.request.Request(self.url, data=body, method="POST", headers={"Content-Type": "application/x-protobuf"})
+        req = urllib.request.Request(self.url, data=body, method="POST", headers={"Content-Type": "application/x-protobuf", **self.cfg.auth_headers()})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return 200 <= r.status < 300

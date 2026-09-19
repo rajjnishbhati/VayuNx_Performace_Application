@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -141,3 +141,49 @@ class Sample(Base):
     value: Mapped[float] = mapped_column(Float)
     unit: Mapped[str] = mapped_column(String(32))
     timestamp: Mapped[datetime] = mapped_column(DateTime)  # UTC
+
+
+# ----------------------------------------------------------------------------- Phase 4: sign-in and API tokens
+
+
+class User(Base):
+    """Someone who signed in through the organisation's identity provider (OIDC)."""
+
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("issuer", "subject", name="uq_user_identity"),)
+
+    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(512))
+    subject: Mapped[str] = mapped_column(String(255))  # the IdP's stable id ("sub"), not the email
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AuthSession(Base):
+    """A browser sign-in. Only a SHA-256 of the cookie value is stored, so a database leak is no session leak."""
+
+    __tablename__ = "auth_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ApiToken(Base):
+    """A bearer token for SDKs and CI. Only its SHA-256 is stored; the value is shown once, at creation."""
+
+    __tablename__ = "api_tokens"
+
+    token_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    prefix: Mapped[str] = mapped_column(String(16))  # first characters, to recognise a token in lists
+    name: Mapped[str] = mapped_column(String(128))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

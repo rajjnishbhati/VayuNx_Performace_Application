@@ -1,6 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import ApiTokens from "@/components/ApiTokens";
+import { api } from "@/lib/api";
+import type { Me } from "@/lib/types";
 import { useStoredNumber, writeStored } from "@/lib/useStored";
 
 export default function SettingsPage() {
@@ -9,6 +12,8 @@ export default function SettingsPage() {
   const [trials, setTrials] = useState<number | null>(null); // null = not edited yet: show the stored value
   const [duration, setDuration] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => { api.me().then(setMe).catch(() => undefined); }, []);
   const t = trials ?? storedTrials;
   const d = duration ?? storedDuration;
   const save = () => {
@@ -33,11 +38,13 @@ export default function SettingsPage() {
           <span role="status" className="muted">{saved ? "Saved." : ""}</span>
         </div>
       </section>
+      {me?.auth === "oidc" && me.signed_in && <ApiTokens me={me} />}
       <section className="card">
         <h2>Profiler Service</h2>
         <p className="ink2">
           This UI calls the service through <code>/api</code>. Start the service with <code>python -m profiler_service</code>{" "}
           (default http://127.0.0.1:8010); point the UI elsewhere with <code>VAYUNX_API_URL</code> when starting Next.js.
+          {me && <> Sign-in: <strong>{me.auth === "oidc" ? "required (OIDC)" : "off (anyone who can reach the service can use it)"}</strong>.</>}
         </p>
       </section>
     </div>

@@ -71,6 +71,31 @@ into PostgreSQL 17.6: 6.1 s, identical comparison output. The whole test suite a
 `$env:VAYUNX_TEST_DB="postgres"` plus `VAYUNX_PG_BIN` (a folder with `initdb`/`pg_ctl`, e.g. the portable
 EnterpriseDB zip) or `VAYUNX_TEST_PG_URL` (a server you own); see `tests/pgtools.py`.
 
+**Sign-in (Phase 4).** Off by default: anyone who can reach the Service can use it, as before. To require
+sign-in, register VAYUNX as an OpenID Connect client with your identity provider (Microsoft Entra ID, Okta,
+Google, Keycloak...). Use redirect URI `<public URL>/auth/callback`, for example
+`http://vayunx.example:3000/api/auth/callback` behind the UI. Then set:
+
+| Variable | Meaning |
+|---|---|
+| `VAYUNX_AUTH=oidc` | require sign-in |
+| `VAYUNX_OIDC_ISSUER`, `VAYUNX_OIDC_CLIENT_ID` | the provider (discovery at `<issuer>/.well-known/openid-configuration`) and this app's client id |
+| `VAYUNX_OIDC_CLIENT_SECRET` | only for confidential clients; PKCE is always used |
+| `VAYUNX_PUBLIC_URL` | where browsers reach the Service, e.g. `http://vayunx.example:3000/api` behind the UI |
+| `VAYUNX_ADMIN_EMAILS` | comma-separated administrators (checked at every sign-in) |
+| `VAYUNX_SESSION_SECRET`, `VAYUNX_SESSION_HOURS` | signs the short-lived sign-in cookie (set it when running several instances); session length, default 12 h |
+
+- **People:** authorization-code flow with PKCE, state and nonce. The id_token's signature (provider JWKS),
+  issuer, audience, expiry and nonce are all checked. After sign-in there is a server-side session in an
+  HttpOnly, SameSite=Lax cookie; only its SHA-256 is stored, so sign-out really ends it.
+- **Cross-site writes:** writes made with that cookie must come from the app's own origin.
+- **SDKs and CI:** create an API token under **Settings → API tokens** and set `VAYUNX_API_TOKEN` where the
+  SDK or CI runs (Python, Node.js, Next.js and Edge all send it). A token is shown once and stored as a SHA-256.
+  Tokens can be revoked, and they cannot create tokens.
+- **Tested** against a local test identity provider (`tests/fake_oidc.py`, real RS256 tokens): bad audience,
+  issuer, expiry, nonce and signature are each refused. The full browser flow through the UI proxy was
+  checked in Edge (`web/scripts/auth-check.mjs`). Not yet tried with a real company identity provider.
+
 The report page loads d3 7.9.0 and d3-flame-graph 4.1.3 from jsdelivr. Without internet access it says so and shows a text tree instead.
 
 ## Crypto Lab and compare screen (Phase 2)
@@ -712,4 +737,11 @@ instrumentation" (see [Phase 3](#profile-your-own-app-sdks-on-opentelemetry-phas
     noisy experiment on one machine.
 20. **Phase 3 is verified on Windows only**, like item 11. The Next.js Edge light mode is built and type-checked
     but was not run in an Edge runtime.
+21. **Sign-in, not permissions yet.** In Phase 4 step 2, every signed-in person can see and change everything;
+    administrators differ only in seeing all API tokens. Projects and roles (step 3) add the real boundaries.
+    Also to confirm:
+    - which identity provider to register with (OIDC works with Entra ID, Okta, Google and Keycloak; SAML is
+      not built)
+    - whether 12-hour sessions suit the organisation's policy
+    - the new wording: "Sign in required", "admin", "revoked"
 

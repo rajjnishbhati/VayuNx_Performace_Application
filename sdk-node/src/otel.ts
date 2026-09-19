@@ -12,7 +12,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
-import type { Config } from "./config";
+import { authHeaders, type Config } from "./config";
 import type { Attrs } from "./ship";
 
 export function resourceAttrs(cfg: Config, version: string): Attrs {
@@ -37,7 +37,7 @@ let contextManagerSet = false;
 export function tracing(cfg: Config, attrs: Attrs, version: string): Tracing {
   // Offline mode stays quiet (spec A) because OTel diagnostics are a no-op unless the app set a diag logger;
   // we do not set one, so an app's own logger is never replaced.
-  const exporter = new OTLPTraceExporter({ url: `${cfg.endpoint}/v1/traces`, timeoutMillis: cfg.flushTimeoutMs });
+  const exporter = new OTLPTraceExporter({ url: `${cfg.endpoint}/v1/traces`, timeoutMillis: cfg.flushTimeoutMs, headers: authHeaders(cfg) });
   const provider = new BasicTracerProvider({
     resource: resourceFromAttributes(attrs as Record<string, string | number | boolean>),
     spanProcessors: [new BatchSpanProcessor(exporter, {
@@ -144,7 +144,7 @@ export function gauges(cfg: Config, attrs: Attrs, active: () => boolean): { prov
   const provider = new MeterProvider({
     resource: resourceFromAttributes(attrs as Record<string, string | number | boolean>),
     readers: [new PeriodicExportingMetricReader({
-      exporter: new OTLPMetricExporter({ url: `${cfg.endpoint}/v1/metrics`, timeoutMillis: cfg.flushTimeoutMs }),
+      exporter: new OTLPMetricExporter({ url: `${cfg.endpoint}/v1/metrics`, timeoutMillis: cfg.flushTimeoutMs, headers: authHeaders(cfg) }),
       exportIntervalMillis: cfg.gaugeIntervalMs, exportTimeoutMillis: Math.min(cfg.flushTimeoutMs, cfg.gaugeIntervalMs),
     })],
   });

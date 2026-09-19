@@ -96,7 +96,7 @@ class CpuTimeSpanProcessor(SpanProcessor):
 def tracer_provider(cfg, attrs: dict) -> TracerProvider:
     tp = TracerProvider(resource=Resource.create(attrs), shutdown_on_exit=False)
     tp.add_span_processor(CpuTimeSpanProcessor())
-    exporter = OTLPSpanExporter(endpoint=f"{cfg.endpoint}/v1/traces", timeout=cfg.flush_timeout_s)
+    exporter = OTLPSpanExporter(endpoint=f"{cfg.endpoint}/v1/traces", timeout=cfg.flush_timeout_s, headers=cfg.auth_headers())
     tp.add_span_processor(BatchSpanProcessor(exporter, max_queue_size=2048, max_export_batch_size=512,
                                              schedule_delay_millis=1000, export_timeout_millis=int(cfg.flush_timeout_s * 1000)))
     return tp
@@ -146,7 +146,7 @@ GAUGES = {  # OTLP name -> key in the snapshot (see profiler_service/otlp.py GAU
 
 
 def meter_provider(cfg, attrs: dict, activity) -> MeterProvider:
-    exporter = OTLPMetricExporter(endpoint=f"{cfg.endpoint}/v1/metrics", timeout=cfg.flush_timeout_s)
+    exporter = OTLPMetricExporter(endpoint=f"{cfg.endpoint}/v1/metrics", timeout=cfg.flush_timeout_s, headers=cfg.auth_headers())
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=int(cfg.gauge_interval_s * 1000),
                                            export_timeout_millis=int(cfg.flush_timeout_s * 1000))
     mp = MeterProvider(resource=Resource.create(attrs), metric_readers=[reader], shutdown_on_exit=False)
