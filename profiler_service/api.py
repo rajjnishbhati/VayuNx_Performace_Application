@@ -19,9 +19,9 @@ from sqlalchemy.orm import Session
 from profiler_service import WIRE_SCHEMA_VERSION, __version__, config
 from profiler_service.comparison import SampleRec, SpanRec, build_report
 from profiler_service.db import iso_utc, make_engine, make_sessionmaker, to_utc_naive
-from profiler_service.models import Run, Sample, Span
+from profiler_service.models import OpStat, Run, Sample, Span
 from profiler_service.report_html import render_index, render_report
-from profiler_service.schemas import IngestResult, RunComplete, RunCreate, RunOut, SampleIn, SpanIn
+from profiler_service.schemas import IngestResult, OpStatsIn, RunComplete, RunCreate, RunOut, SampleIn, SpanIn
 
 
 def get_session(request: Request):
@@ -63,12 +63,25 @@ def create_app(db_url: str | None = None) -> FastAPI:
             return v
         return JSONResponse(status_code=422, content={"detail": safe(jsonable_encoder(exc.errors()))})
 
+    def counts_for(session: Session, run_ids: list[str]) -> dict[str, dict[str, int]]:
+        """Span/sample/op-stat counts for many runs: one grouped query per table, not one per run (no N+1)."""
+        out = {rid: {"span_count": 0, "sample_count": 0, "op_stat_count": 0} for rid in run_ids}
+        if not run_ids:
+            return out
+        for model, key in ((Span, "span_count"), (Sample, "sample_count"), (OpStat, "op_stat_count")):
+            q = select(model.run_id, func.count()).where(model.run_id.in_(run_ids)).group_by(model.run_id)
+            for rid, n in session.execute(q):
+                out[rid][key] = n
+        return out
+
+    def runs_out(session: Session, runs: list[Run]) -> list[dict]:
+        counts = counts_for(session, [r.run_id for r in runs])
+        return [RunOut(run_id=r.run_id, service=r.service, label=r.label, phase=r.phase,
+                       created_at=iso_utc(r.created_at), completed_at=iso_utc(r.completed_at),
+                       metadata=json.loads(r.metadata_json), **counts[r.run_id]).model_dump() for r in runs]
+
     def run_out(session: Session, run: Run) -> dict:
-        spans = session.scalar(select(func.count()).select_from(Span).where(Span.run_id == run.run_id))
-        samples = session.scalar(select(func.count()).select_from(Sample).where(Sample.run_id == run.run_id))
-        return RunOut(run_id=run.run_id, service=run.service, label=run.label, phase=run.phase,
-                      created_at=iso_utc(run.created_at), completed_at=iso_utc(run.completed_at),
-                      metadata=json.loads(run.metadata_json), span_count=spans, sample_count=samples).model_dump()
+        return runs_out(session, [run])[0]
 
     def load_run(session: Session, run_id: str) -> Run:
         run = session.get(Run, run_id)
@@ -163,6 +176,30 @@ def create_app(db_url: str | None = None) -> FastAPI:
                                value=s.value, unit=s.unit, timestamp=to_utc_naive(s.timestamp)) for s in items)
         session.commit()
         return IngestResult(accepted=len(items))
+
+    @app.post("/v1/op-stats", status_code=201)
+    def ingest_op_stats(body: Annotated[OpStatsIn | list[OpStatsIn], Body()], session: SessionDep) -> IngestResult:
+        """Fast-path summaries: one row per operation per interval (latency histogram built in the SDK)."""
+        items = body if isinstance(body, list) else [body]
+        check_batch(session, items, "op-stats")
+        session.add_all(OpStat(run_id=s.run_id, service=s.service, category=s.category, op_name=s.op_name,
+                               attributes_json=json.dumps(s.attributes), interval_start=to_utc_naive(s.interval_start),
+                               interval_end=to_utc_naive(s.interval_end), count=s.count, sum_ns=s.sum_ns,
+                               min_ns=s.min_ns, max_ns=s.max_ns, p50_ns=s.p50_ns, p95_ns=s.p95_ns, p99_ns=s.p99_ns,
+                               histogram_json=s.histogram.model_dump_json(), sdk_overhead_ns=s.sdk_overhead_ns)
+                        for s in items)
+        session.commit()
+        return IngestResult(accepted=len(items))
+
+    @app.get("/v1/runs/{run_id}/op-stats")
+    def list_op_stats(run_id: str, session: SessionDep) -> list[dict]:
+        load_run(session, run_id)
+        rows = session.scalars(select(OpStat).where(OpStat.run_id == run_id).order_by(OpStat.interval_start, OpStat.id))
+        return [{"op_name": r.op_name, "category": r.category, "attributes": json.loads(r.attributes_json),
+                 "interval_start": iso_utc(r.interval_start), "interval_end": iso_utc(r.interval_end),
+                 "count": r.count, "sum_ns": r.sum_ns, "min_ns": r.min_ns, "max_ns": r.max_ns,
+                 "p50_ns": r.p50_ns, "p95_ns": r.p95_ns, "p99_ns": r.p99_ns,
+                 "histogram": json.loads(r.histogram_json), "sdk_overhead_ns": r.sdk_overhead_ns} for r in rows]
 
     # ------------------------------------------------------------------ comparison / report
 

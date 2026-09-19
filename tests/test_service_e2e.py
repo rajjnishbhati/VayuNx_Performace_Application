@@ -56,9 +56,10 @@ def test_sdk_nesting_sampling_and_report(server):
                     assert inner.parent_span_id == outer.span_id
                 assert outer.parent_span_id is None
             stats = client.stop_sampling()
-            assert stats["errors"] == [] and stats["samples_sent"] > 0
+            assert stats["errors"] == [] and stats["samples_recorded"] > 0
         run_ids[phase] = run.run_id
-        assert run.spans_sent == 6
+        # Delivery is asynchronous (background sender); run exit flushes, so everything is confirmed here.
+        assert run.spans_sent == 6 and run.samples_sent == stats["samples_recorded"]
 
     t = HttpTransport(server)
     assert t.get(f"/v1/runs/{run_ids['baseline']}")["completed_at"] is not None
@@ -119,6 +120,44 @@ def test_ingestion_validation(server):
     same_phase = t.post("/v1/runs", {"service": "val-svc", "label": "b2", "phase": "baseline"})["run_id"]
     assert status_of(lambda: t.get(f"/v1/comparison?baseline_run_id={rid}&remediated_run_id={other}")) == 422
     assert status_of(lambda: t.get(f"/v1/comparison?baseline_run_id={rid}&remediated_run_id={same_phase}")) == 422
+
+
+def test_op_stats_round_trip_through_sdk_and_service(server):
+    client = ProfilerClient(server, "e2e-ops")
+    with client.run(label="ops", phase="baseline") as run:
+        op = run.op("md5_hash", attributes={"crypto.algorithm": "MD5"})
+        for _ in range(3000):
+            with op:
+                pass
+    assert run.op_stats_sent >= 1 and client.stats()["dropped_op_stats"] == 0
+    stats = HttpTransport(server).get(f"/v1/runs/{run.run_id}/op-stats")
+    assert sum(s["count"] for s in stats) == 3000
+    first = stats[0]
+    assert first["op_name"] == "md5_hash" and first["attributes"] == {"crypto.algorithm": "MD5"}
+    assert first["histogram"]["scheme"] == "log2x8-ns" and first["sdk_overhead_ns"] > 0
+    assert HttpTransport(server).get(f"/v1/runs/{run.run_id}")["op_stat_count"] == len(stats)
+
+
+def test_op_stats_validation(server):
+    t = HttpTransport(server)
+    rid = t.post("/v1/runs", {"service": "ops-val", "label": "v", "phase": "baseline"})["run_id"]
+
+    def body(**over):
+        hist = {"scheme": "log2x8-ns", "count": 2, "sum_ns": 3000, "min_ns": 1000, "max_ns": 2000, "buckets": {"72": 1, "80": 1}}
+        base = {"run_id": rid, "service": "ops-val", "category": "cryptographic", "op_name": "md5_hash", "attributes": {},
+                "interval_start": now(), "interval_end": now(), "count": 2, "sum_ns": 3000, "min_ns": 1000, "max_ns": 2000,
+                "p50_ns": 1000, "p95_ns": 2000, "p99_ns": 2000, "histogram": hist, "sdk_overhead_ns": 900.0}
+        base.update(over)
+        return base
+
+    assert t.post("/v1/op-stats", body())["accepted"] == 1
+    assert status_of(lambda: t.post("/v1/op-stats", body(count=3))) == 422  # histogram count mismatch
+    assert status_of(lambda: t.post("/v1/op-stats", body(min_ns=5000))) == 422  # min > max
+    bad_hist = body()
+    bad_hist["histogram"] = {**bad_hist["histogram"], "scheme": "linear"}
+    assert status_of(lambda: t.post("/v1/op-stats", bad_hist)) == 422
+    t.post(f"/v1/runs/{rid}/complete", {})
+    assert status_of(lambda: t.post("/v1/op-stats", body())) == 409
 
 
 def test_sdk_guards(server):

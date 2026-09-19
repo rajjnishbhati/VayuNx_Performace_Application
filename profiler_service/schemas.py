@@ -18,6 +18,17 @@ ID_PATTERN = r"^[A-Za-z0-9._:\-]{1,64}$"
 AttrValue = str | int | float | bool
 
 
+def check_attributes(v: dict) -> dict:
+    if len(v) > MAX_ATTRIBUTES:
+        raise ValueError(f"at most {MAX_ATTRIBUTES} attributes")
+    for key, value in v.items():
+        if not 1 <= len(key) <= 64:
+            raise ValueError("attribute keys must be 1-64 characters")
+        if isinstance(value, str) and len(value) > 256:
+            raise ValueError("string attribute values must be <= 256 characters")
+    return v
+
+
 class RunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +55,7 @@ class RunOut(BaseModel):
     metadata: dict[str, Any]
     span_count: int
     sample_count: int
+    op_stat_count: int = 0
 
 
 class SpanIn(BaseModel):
@@ -63,14 +75,7 @@ class SpanIn(BaseModel):
     @field_validator("attributes")
     @classmethod
     def _limit_attributes(cls, v: dict) -> dict:
-        if len(v) > MAX_ATTRIBUTES:
-            raise ValueError(f"at most {MAX_ATTRIBUTES} attributes")
-        for key, value in v.items():
-            if not 1 <= len(key) <= 64:
-                raise ValueError("attribute keys must be 1-64 characters")
-            if isinstance(value, str) and len(value) > 256:
-                raise ValueError("string attribute values must be <= 256 characters")
-        return v
+        return check_attributes(v)
 
     @model_validator(mode="after")
     def _check(self) -> SpanIn:
@@ -91,6 +96,65 @@ class SampleIn(BaseModel):
     value: float = Field(allow_inf_nan=False)
     unit: str = Field(min_length=1, max_length=32)
     timestamp: AwareDatetime
+
+
+class HistogramIn(BaseModel):
+    """Log-bucketed latency histogram; scheme documented in vayunx_profiler_sdk/histogram.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: Literal["log2x8-ns"]
+    count: int = Field(ge=0)
+    sum_ns: int = Field(ge=0)
+    min_ns: int | None = Field(default=None, ge=0)
+    max_ns: int | None = Field(default=None, ge=0)
+    buckets: dict[str, int]
+
+    @model_validator(mode="after")
+    def _check(self) -> HistogramIn:
+        if any(not k.isdigit() or v < 0 for k, v in self.buckets.items()):
+            raise ValueError("bucket keys must be non-negative integer indexes with non-negative counts")
+        if sum(self.buckets.values()) != self.count:
+            raise ValueError("bucket counts do not add up to count")
+        return self
+
+
+class OpStatsIn(BaseModel):
+    """One interval summary of a fast-path operation (many calls aggregated in the SDK)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(pattern=ID_PATTERN)
+    service: str = Field(min_length=1, max_length=128)
+    category: Category
+    op_name: str = Field(min_length=1, max_length=256)
+    attributes: dict[str, AttrValue] = Field(default_factory=dict)
+    interval_start: AwareDatetime
+    interval_end: AwareDatetime
+    count: int = Field(ge=1)
+    sum_ns: int = Field(ge=0)
+    min_ns: int = Field(ge=0)
+    max_ns: int = Field(ge=0)
+    p50_ns: int | None = Field(default=None, ge=0)
+    p95_ns: int | None = Field(default=None, ge=0)
+    p99_ns: int | None = Field(default=None, ge=0)
+    histogram: HistogramIn
+    sdk_overhead_ns: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @field_validator("attributes")
+    @classmethod
+    def _limit_attributes(cls, v: dict) -> dict:
+        return check_attributes(v)
+
+    @model_validator(mode="after")
+    def _check(self) -> OpStatsIn:
+        if self.interval_end < self.interval_start:
+            raise ValueError("interval_end is before interval_start")
+        if self.min_ns > self.max_ns:
+            raise ValueError("min_ns is greater than max_ns")
+        if self.histogram.count != self.count or self.histogram.sum_ns != self.sum_ns:
+            raise ValueError("histogram count/sum_ns do not match the summary")
+        return self
 
 
 class IngestResult(BaseModel):

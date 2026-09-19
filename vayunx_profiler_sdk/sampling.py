@@ -11,22 +11,17 @@ Timing of samples:
 So even a run shorter than one interval gets start/stop samples - but the report flags metrics
 with fewer than 3 samples as indicative only.
 
-Overhead: the sampler thread (psutil calls + periodic batched HTTP flush) runs inside the
-measured process, so its own CPU/memory is included in what it measures. Samples are buffered
-and flushed every ~2 s rather than one HTTP call per sample.
+Samples are handed to the client's background sender (no network I/O here). psutil failures
+are collected in `errors` and never raised into host code.
 """
 
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Callable
 
 import psutil
-
-if TYPE_CHECKING:
-    from vayunx_profiler_sdk.client import ProfilerRun
 
 SUPPORTED_METRICS = {
     "cpu_pct": "%",  # percent of ONE logical CPU (can exceed 100 when several threads run)
@@ -34,11 +29,11 @@ SUPPORTED_METRICS = {
     "num_threads": "count",
 }
 MIN_INTERVAL_MS = 10
-FLUSH_EVERY_S = 2.0
 
 
 class Sampler:
-    def __init__(self, transport: Any, run: "ProfilerRun", service: str, category: str, interval_ms: int, metrics: list[str]):
+    def __init__(self, emit: Callable[[str, str, dict], bool], run_id: str, service: str, category: str,
+                 interval_ms: int, metrics: list[str]):
         unknown = [m for m in metrics if m not in SUPPORTED_METRICS]
         if unknown:
             raise ValueError(f"unsupported metrics {unknown}; supported: {sorted(SUPPORTED_METRICS)}")
@@ -46,26 +41,29 @@ class Sampler:
             raise ValueError("at least one metric is required")
         if interval_ms < MIN_INTERVAL_MS:
             raise ValueError(f"interval_ms must be >= {MIN_INTERVAL_MS}")
-        self.transport, self.run, self.service, self.category = transport, run, service, category
+        self.emit, self.run_id, self.service, self.category = emit, run_id, service, category
         self.interval_s = interval_ms / 1000.0
         self.metrics = list(dict.fromkeys(metrics))
-        self._proc = psutil.Process()
         self._stop = threading.Event()
-        self._lock = threading.Lock()
-        self._buffer: list[dict] = []
-        self.samples_sent = 0
+        self.samples_recorded = 0
         self.errors: list[str] = []
+        self._proc = None
         self._thread = threading.Thread(target=self._loop, name="vayunx-profiler-sampler", daemon=True)
 
     def start(self) -> None:
-        if "cpu_pct" in self.metrics:
-            self._proc.cpu_percent(None)  # prime; this first reading is meaningless and discarded
-        self._take(initial=True)
+        try:
+            self._proc = psutil.Process()
+            if "cpu_pct" in self.metrics:
+                self._proc.cpu_percent(None)  # prime; this first reading is meaningless and discarded
+            self._take(initial=True)
+        except Exception as exc:
+            self.errors.append(repr(exc))
         self._thread.start()
 
     def _take(self, initial: bool = False) -> None:
+        if self._proc is None:
+            raise RuntimeError("psutil process handle unavailable")
         ts = datetime.now(timezone.utc).isoformat()
-        rows = []
         with self._proc.oneshot():
             for metric in self.metrics:
                 if metric == "cpu_pct":
@@ -76,39 +74,24 @@ class Sampler:
                     value = self._proc.memory_info().rss / (1024 * 1024)
                 else:
                     value = self._proc.num_threads()
-                rows.append({"run_id": self.run.run_id, "service": self.service, "category": self.category,
-                             "metric_name": metric, "value": float(value), "unit": SUPPORTED_METRICS[metric], "timestamp": ts})
-        with self._lock:
-            self._buffer.extend(rows)
-
-    def _flush(self) -> None:
-        with self._lock:
-            batch, self._buffer = self._buffer, []
-        if not batch:
-            return
-        try:
-            self.transport.post("/v1/samples", batch)
-            self.samples_sent += len(batch)
-        except Exception as exc:  # never crash the instrumented application
-            self.errors.append(repr(exc))
+                self.emit("sample", self.run_id, {"run_id": self.run_id, "service": self.service, "category": self.category,
+                                                  "metric_name": metric, "value": float(value),
+                                                  "unit": SUPPORTED_METRICS[metric], "timestamp": ts})
+                self.samples_recorded += 1
 
     def _loop(self) -> None:
-        last_flush = time.monotonic()
         while not self._stop.wait(self.interval_s):
             try:
                 self._take()
             except Exception as exc:
-                self.errors.append(repr(exc))
-            if time.monotonic() - last_flush >= FLUSH_EVERY_S:
-                self._flush()
-                last_flush = time.monotonic()
+                if len(self.errors) < 100:
+                    self.errors.append(repr(exc))
 
     def stop(self) -> dict:
         self._stop.set()
-        self._thread.join()
+        self._thread.join(timeout=self.interval_s + 1.0)
         try:
             self._take()  # final sample: covers the time since the last periodic sample
         except Exception as exc:
             self.errors.append(repr(exc))
-        self._flush()
-        return {"samples_sent": self.samples_sent, "errors": list(self.errors)}
+        return {"samples_recorded": self.samples_recorded, "errors": list(self.errors)}
