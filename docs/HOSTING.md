@@ -23,8 +23,42 @@ through the tunnel.
 | UI | `npx next start -p 3000 -H 127.0.0.1` in `web\` | production build (`npx next build`) |
 | Both | `powershell -File ops\start-vayunx.ps1` | starts whatever is not already running; logs in `ops\logs\` |
 | At sign-in | Scheduled task **VAYUNX Profiler** | runs the script above; remove with `Unregister-ScheduledTask -TaskName "VAYUNX Profiler"` |
+| Every 2 min | Scheduled task **VAYUNX Tunnel Watchdog** | runs `ops\tunnel-watchdog.ps1`; see below |
 
 Rebuild the UI after changing it: `cd web; npx next build`, then restart the UI process.
+
+## Without a domain: the Quick Tunnel and its watchdog
+
+With no zone of your own, the app is published by a Cloudflare **Quick Tunnel**, which has no stable hostname.
+If Cloudflare drops the registration - sleep, a network blip, or no visible reason - `cloudflared` keeps retrying
+a tunnel that no longer exists, DNS for that name goes NXDOMAIN, and the URL is dead for good. Only a restart
+fixes it, and every restart hands out a new random name. That happened on 20 September 2026, which is why
+`ops\tunnel-watchdog.ps1` exists.
+
+Each run does one check:
+
+1. the UI answers on 127.0.0.1:3000 - if not, it runs `ops\start-vayunx.ps1`;
+2. the recorded public URL answers 200 - if not, it replaces the tunnel and records the new URL.
+
+It tests the **URL**, not the process, because a live `cloudflared` retrying a dead registration looks healthy.
+Only the Quick Tunnel is ever stopped: it is recognised by `--url` on its command line, so the token-managed
+`Benchmark_Application` service is never touched. A global mutex keeps two runs from overlapping.
+
+**Where the current URL is** (it changes on every restart - never reuse an old one):
+
+| Place | What it holds |
+|---|---|
+| Desktop shortcut **VAYUNX Profiler.url** | double-click to open the live site |
+| `ops\logs\tunnel-url.txt` | the URL, one line |
+| `ops\logs\watchdog.log` | every restart with a timestamp and why |
+| `ops\logs\quick-tunnel.log` | cloudflared's own log (previous one kept as `quick-tunnel.prev.log`) |
+
+Run it by hand any time: `powershell -ExecutionPolicy Bypass -File ops\tunnel-watchdog.ps1`
+(`-Force` replaces a healthy tunnel, `-NoShortcut` leaves the desktop alone).
+Stop the automation with `schtasks /Delete /TN "VAYUNX Tunnel Watchdog" /F`.
+
+**What it does not fix:** the address still changes, so a link you sent yesterday may be dead today, and a Quick
+Tunnel still cannot be protected by Zero Trust Access. A domain on Cloudflare solves both - see the section below.
 
 ## In the Cloudflare dashboard
 
@@ -59,6 +93,7 @@ Rebuild the UI after changing it: `cd web; npx next build`, then restart the UI 
 | Symptom | Check |
 |---|---|
 | Cloudflare shows 502 / 1033 | Is anything listening? `Get-NetTCPConnection -LocalPort 3000,8010 -State Listen`. Run `ops\start-vayunx.ps1`. |
+| The public URL does not resolve at all | The Quick Tunnel was dropped and its name is gone. `ops\tunnel-watchdog.ps1` replaces it within ~2 minutes; the new URL is in `ops\logs\tunnel-url.txt`. |
 | Page loads, data does not | The UI proxies `/api` to 8010: `curl http://127.0.0.1:3000/api/v2/projects` should answer 200. |
 | Everyone can open the site | The Access application is missing or its policy does not cover that hostname. |
 | Tunnel offline | `Get-Service Cloudflared`; the tunnel is token-managed from the dashboard. |

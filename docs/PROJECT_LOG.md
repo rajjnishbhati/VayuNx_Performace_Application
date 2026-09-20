@@ -259,6 +259,29 @@ the grade; (3) run `cloudflared --post-quantum` so the tunnel leg is PQ too; (4)
 ML-DSA or SLH-DSA certificates and no browser trusts them. "PQC Grade A" today means hybrid PQ key agreement plus
 classical signatures plus crypto agility. A rubric that demands a PQ certificate cannot be passed by anyone.
 
+### 8.4b The tunnel watchdog
+
+After the first hostname died, the user chose a **watchdog** over buying a domain. `ops\tunnel-watchdog.ps1`
+runs every two minutes as the scheduled task **VAYUNX Tunnel Watchdog** and does one check: the UI answers on
+127.0.0.1:3000 (if not, it runs `start-vayunx.ps1`), and the recorded public URL answers 200 (if not, it replaces
+the tunnel and records the new URL). It tests the URL rather than the process, because a live `cloudflared`
+retrying a dead registration looks perfectly healthy. Only a process carrying `--url` is ever stopped, so the
+token-managed `Benchmark_Application` service is never touched; a global mutex prevents overlapping runs.
+
+The current URL lands in three places: the desktop shortcut **VAYUNX Profiler.url**, `ops\logs\tunnel-url.txt`,
+and `ops\logs\watchdog.log` with the reason and timestamp.
+
+Verified by killing the tunnel: the watchdog noticed and had a new URL recorded **16 seconds later**.
+
+Two bugs were found and fixed while testing, both worth remembering:
+- `-match` overwrites `$Matches`, so testing for the hostname and then for "Registered tunnel connection" recorded
+  the log message as the URL. Fixed with an explicit `[regex]::Match`.
+- `schtasks /TR` with escaped quotes swallowed `/RU` and `/IT` into the command line and the task failed with
+  `-196608`. The script path has no spaces, so the inner quotes were dropped.
+
+It does not fix the real problem: the address still changes, and a Quick Tunnel still cannot be protected by
+Zero Trust Access. A domain on Cloudflare remains the only stable answer, and the user knows this.
+
 ### 8.5 Working agreement for changes from here
 
 Proposed changes are listed and numbered; nothing is touched until the user approves an item. Once approved, the
