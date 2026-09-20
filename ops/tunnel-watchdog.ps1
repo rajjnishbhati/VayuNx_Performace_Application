@@ -14,14 +14,21 @@
 #   - ops\logs\tunnel-url.txt   (just the URL, one line)
 #   - ops\logs\watchdog.log     (every check that did something, with timestamps)
 #
-# Run it by hand any time: powershell -ExecutionPolicy Bypass -File ops\tunnel-watchdog.ps1
+# The same script is the on-demand switch, whether or not the task is running:
+#   ops\tunnel-watchdog.ps1           publish the site (starts the app too) and print the URL
+#   ops\tunnel-watchdog.ps1 -Stop     take it off the internet; the app keeps running on 127.0.0.1
+#   ops\tunnel-watchdog.ps1 -Force    replace a working tunnel with a fresh one (new URL)
+# Prefix with: powershell -ExecutionPolicy Bypass -File
 
 [CmdletBinding()]
 param(
     # Skip creating or updating the desktop shortcut.
     [switch]$NoShortcut,
     # Replace the tunnel even if the current URL answers. For testing.
-    [switch]$Force
+    [switch]$Force,
+    # Take the site off the internet: stop the Quick Tunnel and forget its URL. The app keeps
+    # running on 127.0.0.1, and nothing else is touched.
+    [switch]$Stop
 )
 
 $ErrorActionPreference = "Stop"
@@ -130,6 +137,29 @@ $mutex = New-Object System.Threading.Mutex($false, "Global\VayunxTunnelWatchdog"
 if (-not $mutex.WaitOne(0)) { Write-Output "another watchdog run is in progress; nothing to do"; exit 0 }
 
 try {
+    # 0. Take it down on request. The recorded URL and the shortcut go too: a link that points at a tunnel
+    #    which no longer exists is worse than no link, because it looks like the app is broken.
+    if ($Stop) {
+        $running = Get-QuickTunnelProcess
+        if (-not $running) { Write-Output "no quick tunnel is running"; }
+        foreach ($p in $running) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Note "stopped the quick tunnel on request (PID $($p.ProcessId))"
+        }
+        Remove-Item -Path $urlFile -ErrorAction SilentlyContinue
+        if (-not $NoShortcut) {
+            Remove-Item -Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "VAYUNX Profiler.url") -ErrorAction SilentlyContinue
+        }
+        # Stopping is pointless while the scheduled task is still armed - it would publish the site again,
+        # under a new name, within two minutes.
+        $task = Get-ScheduledTask -TaskName "VAYUNX Tunnel Watchdog" -ErrorAction SilentlyContinue
+        if ($task -and $task.State -ne "Disabled") {
+            Write-Warning "the VAYUNX Tunnel Watchdog task is still enabled and will publish the site again within ~2 minutes. Disable it with: schtasks /Change /TN `"VAYUNX Tunnel Watchdog`" /DISABLE"
+        }
+        Write-Output "the site is no longer published; the app is still running on $uiUrl"
+        exit 0
+    }
+
     # 1. The app itself. Nothing public can work while this is down, and it is the cheaper check.
     $uiUp = Test-Url $uiUrl 10
     if (-not $uiUp) {

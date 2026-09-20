@@ -57,6 +57,29 @@ Run it by hand any time: `powershell -ExecutionPolicy Bypass -File ops\tunnel-wa
 (`-Force` replaces a healthy tunnel, `-NoShortcut` leaves the desktop alone).
 Stop the automation with `schtasks /Delete /TN "VAYUNX Tunnel Watchdog" /F`.
 
+### Or run it on demand, with no automation
+
+The same script is the manual switch, and the scheduled task is optional. Disable the task first, or it will
+publish the site again within two minutes:
+
+```powershell
+schtasks /Change /TN "VAYUNX Tunnel Watchdog" /DISABLE     # stop the automation (reversible)
+cd D:\Downloads\Vayunx_Performance_Application\vayunx-profiler-service
+
+powershell -ExecutionPolicy Bypass -File ops\tunnel-watchdog.ps1          # publish: prints the URL
+powershell -ExecutionPolicy Bypass -File ops\tunnel-watchdog.ps1 -Stop    # unpublish
+powershell -ExecutionPolicy Bypass -File ops\tunnel-watchdog.ps1 -Force   # new URL on purpose
+```
+
+- **Publishing** starts the app first if it is not running, waits for Cloudflare to register the tunnel, checks
+  the URL answers, then writes it to the desktop shortcut and `ops\logs\tunnel-url.txt`. About 20-30 seconds.
+- **Unpublishing** stops only the Quick Tunnel and deletes the shortcut and the recorded URL, so nobody is left
+  holding a link to a tunnel that no longer exists. The app keeps running on 127.0.0.1:3000 for you.
+- Re-enable the automation any time: `schtasks /Change /TN "VAYUNX Tunnel Watchdog" /ENABLE`.
+
+Manual means the link is down whenever you have not started it, and **every publish gives a different URL** -
+share it after you start it, not before.
+
 **What it does not fix:** the address still changes, so a link you sent yesterday may be dead today, and a Quick
 Tunnel still cannot be protected by Zero Trust Access. A domain on Cloudflare solves both - see the section below.
 
