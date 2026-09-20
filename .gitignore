@@ -15,3 +15,5 @@ service.err
 
 # Local snapshot archive (kept on disk, not versioned)
 pyproject.zip
+ops/logs/
+web/ui.log
