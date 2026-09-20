@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import DotPlot from "@/components/charts/DotPlot";
 import MachineView, { machineTable } from "@/components/charts/MachineView";
 import FlagNote, { flagsFor } from "@/components/FlagNote";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/States";
 import Tabs from "@/components/Tabs";
 import { api } from "@/lib/api";
 import { colorMap } from "@/lib/colors";
+import { PRESENT_KEY, applyPresent, useStoredString } from "@/lib/useStored";
 import { fmtBytes, fmtCores, fmtDate, fmtInt, fmtNs } from "@/lib/format";
 import type { CompareResult, Timeseries, Variant } from "@/lib/types";
 
@@ -348,31 +349,97 @@ function Exports({ r, sharedToken }: { r: CompareResult; sharedToken?: string })
   );
 }
 
+/** The demo path through a result: the headline first, then the evidence, then what it costs at your traffic.
+ *  Each step says in plain words what the audience is looking at; the numbers stay on screen underneath. */
+const STEPS = [
+  { id: "headline", label: "Headline", caption: "What the switch changes per call", tab: null, target: "verdict" },
+  { id: "app", label: "In the code", caption: "Time per call, measured where the code runs", tab: "app", target: "tabs" },
+  { id: "machine", label: "On the machine", caption: "CPU and memory while it ran", tab: "machine", target: "tabs" },
+  { id: "security", label: "Security", caption: "Is it safe for storing passwords?", tab: "security", target: "tabs" },
+  { id: "capacity", label: "At your traffic", caption: "Cores and memory at the rate you choose", tab: null, target: "whatif" },
+] as const;
+
+function PresentBar({ step, count, onStep, onExit }: { step: number; count: number; onStep: (i: number) => void; onExit: () => void }) {
+  const s = STEPS[step];
+  return (
+    <div className="present-bar" role="toolbar" aria-label="Presentation steps">
+      <span className="step">{step + 1}/{count} · {s.label}</span>
+      <span className="caption">{s.caption}</span>
+      <button onClick={() => onStep(step - 1)} disabled={step === 0} aria-label="Previous step">◀ Back</button>
+      <button onClick={() => onStep(step + 1)} disabled={step === count - 1} aria-label="Next step">Next ▶</button>
+      <button onClick={onExit}>Exit</button>
+    </div>
+  );
+}
+
 export default function ResultView({ result, ts, tsLoading, onReference, sharedToken }: {
   result: CompareResult; ts: Timeseries | null; tsLoading: boolean; onReference?: (key: string) => void;
   /** set on /shared/<token>: read-only, downloads go through the link */
   sharedToken?: string;
 }) {
   const [tab, setTab] = useState("app");
+  const present = useStoredString(PRESENT_KEY, "off") === "on";
+  const [step, setStep] = useState(0);
+  const verdictRef = useRef<HTMLElement>(null);
+  const tabsRef = useRef<HTMLElement>(null);
+  const whatifRef = useRef<HTMLDivElement>(null);
+
+  /** Move to a step: switch the tab it needs, then bring that part of the page into view. */
+  const go = (i: number) => {
+    const n = Math.max(0, Math.min(STEPS.length - 1, i));
+    const s = STEPS[n];
+    setStep(n);
+    if (s.tab) setTab(s.tab);
+    const el = s.target === "verdict" ? verdictRef : s.target === "tabs" ? tabsRef : whatifRef;
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    requestAnimationFrame(() => el.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" }));
+  };
+
+  // Entering presentation mode starts the audience at the current step rather than wherever the page was scrolled.
+  useEffect(() => {
+    if (!present) return;
+    const s = STEPS[step];
+    const el = s.target === "verdict" ? verdictRef : s.target === "tabs" ? tabsRef : whatifRef;
+    requestAnimationFrame(() => el.current?.scrollIntoView({ block: "start" }));
+  }, [present]); // eslint-disable-line react-hooks/exhaustive-deps -- only on entering, not on every step
+
+  useEffect(() => {
+    if (!present) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return; // typing in the what-if boxes
+      if (e.key === "ArrowRight" || e.key === "PageDown") go(step + 1);
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") go(step - 1);
+      else if (e.key === "Escape") applyPresent(false);
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });  // re-bound each render, so the handler always sees the current step
+
   const order = result.experiment?.params.presets ?? result.variants.map((v) => v.key);
   const colors = colorMap(order, result.reference);
   return (
     <div>
-      <section className="card" aria-labelledby="verdict-title">
+      <section className="card present-target" ref={verdictRef} aria-labelledby="verdict-title">
         <h2 id="verdict-title" className="sr-only">Result</h2>
         <p className="verdict" aria-live="polite">{result.verdict}</p>
         <Scorecard r={result} colors={colors} onReference={onReference} />
         <Exports r={result} sharedToken={sharedToken} />
       </section>
-      <section className="card">
+      <section className="card present-target" ref={tabsRef}>
         <Tabs active={tab} onChange={setTab} tabs={[
           { id: "app", label: "App view (instrumentation)", content: <AppView r={result} colors={colors} /> },
           { id: "machine", label: "Machine view (sampling)", content: <MachineTab r={result} ts={ts} tsLoading={tsLoading} colors={colors} /> },
           { id: "security", label: "Security", content: <SecurityTab r={result} colors={colors} /> },
         ]} />
       </section>
-      <WhatIf key={result.reference} r={result} colors={colors} />
+      <div className="present-target" ref={whatifRef}>
+        <WhatIf key={result.reference} r={result} colors={colors} />
+      </div>
       <Details r={result} />
+      {present && <PresentBar step={step} count={STEPS.length} onStep={go} onExit={() => applyPresent(false)} />}
     </div>
   );
 }

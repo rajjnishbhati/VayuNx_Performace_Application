@@ -8,7 +8,8 @@ export const metadata: Metadata = {
 };
 
 // Applies the saved theme before paint (no flash). "system" = no attribute; the CSS media query decides.
-const themeScript = `try{var t=localStorage.getItem("vx-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
+const themeScript = `try{var t=localStorage.getItem("vx-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t;`
+  + `if(localStorage.getItem("vx-present")==="on")document.documentElement.dataset.present="on"}catch(e){}`;
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (

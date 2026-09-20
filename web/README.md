@@ -28,6 +28,24 @@ before building if the Service is not on port 8010.
 | **Algorithms** | The built-in Lab presets with parameters, library versions and security notes. |
 | **Settings** | Default trials and seconds per trial (stored in this browser), and where the Service is. |
 
+## Presentation mode (showing a result to an audience)
+
+**Presentation** in the header (or `Esc` to leave) switches the screen to projector viewing: the left navigation
+and the theme controls go away, type and tables grow, and a bar at the bottom walks the result in five steps.
+
+| Step | What is on screen | The sentence to say |
+|---|---|---|
+| 1. Headline | Verdict and scorecard | "This is what the switch costs per call." |
+| 2. In the code | App view tab | "Measured inside the code, per call, not averaged over a process." |
+| 3. On the machine | Machine view tab | "And this is what the machine was doing while it ran." |
+| 4. Security | Security tab | "The slow one is the one that is safe for passwords." |
+| 5. At your traffic | The what-if box | "At our login rate that is this many cores and this much RAM." |
+
+Step with the bar's **Back** / **Next**, or with the arrow keys (`PageUp` / `PageDown` works too, so a presenter
+remote does). Keys are ignored while you are typing in the what-if boxes, so you can change the login rate live.
+The mode is remembered in this browser and is applied before the first paint, so a reload mid-demo does not
+flash the normal layout. It changes presentation only - no number, no API call and no stored result differs.
+
 ## Design rules (spec E + the dataviz reference palette)
 
 - **Colour.**

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PROJECT_KEY, api } from "@/lib/api";
 import type { Me, ProjectItem } from "@/lib/types";
-import { useStoredString, writeStored } from "@/lib/useStored";
+import { PRESENT_KEY, applyPresent, useStoredString, writeStored } from "@/lib/useStored";
 
 const NAV = [
   { href: "/", label: "Compare" },
@@ -28,6 +28,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const stored = useStoredString("vx-theme", "system");
   const theme: Theme = stored === "light" || stored === "dark" ? stored : "system";
   const [machine, setMachine] = useState<string>("This machine");
+  const present = useStoredString(PRESENT_KEY, "off") === "on";
   const [me, setMe] = useState<Me | null>(null);
   useEffect(() => { api.me().then(setMe).catch(() => undefined); }, []);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
@@ -71,6 +72,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </select>
         </label>
         <span className="spacer" />
+        <button aria-pressed={present} onClick={() => applyPresent(!present)}
+                title="Bigger type, no navigation, and step through the result with the arrow keys (Esc to leave)">
+          <span aria-hidden>▶ </span>{present ? "Leave presentation" : "Presentation"}
+        </button>
         <label>
           Theme
           <select aria-label="Theme" value={theme} onChange={(e) => applyTheme(e.target.value as Theme)}>

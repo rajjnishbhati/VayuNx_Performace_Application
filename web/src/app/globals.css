@@ -165,3 +165,25 @@ table.data td.num, table.data th.num { text-align: right; font-variant-numeric: 
 details.drawer > summary { cursor: pointer; color: var(--ink-2); font-weight: 600; }
 .whatif-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .callout { border-left: 3px solid var(--axis); padding: 4px 0 4px 12px; color: var(--ink-2); }
+
+/* ---------- presentation mode (for a projector: bigger, less chrome) ---------- */
+:root[data-present="on"] .leftnav { display: none; }
+:root[data-present="on"] .shell { grid-template-columns: 1fr; }
+:root[data-present="on"] .topbar label { display: none; }
+:root[data-present="on"] main { padding: 24px 32px 128px; font-size: 18px; }
+:root[data-present="on"] .page { max-width: 1400px; }
+:root[data-present="on"] h1 { font-size: 34px; }
+:root[data-present="on"] h2 { font-size: 26px; }
+:root[data-present="on"] .verdict { font-size: 26px; line-height: 1.4; }
+:root[data-present="on"] table.data { font-size: 17px; }
+:root[data-present="on"] .tabs [role="tab"] { font-size: 18px; padding: 10px 16px; }
+:root[data-present="on"] .card { padding: 20px; }
+:root[data-present="on"] .present-target { scroll-margin-top: 72px; }
+
+.present-bar { position: fixed; left: 0; right: 0; bottom: 16px; width: fit-content; margin: 0 auto; z-index: 20; display: flex;
+  align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); max-width: calc(100vw - 32px); flex-wrap: wrap; }
+.present-bar .step { font-weight: 650; white-space: nowrap; }
+.present-bar .caption { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.present-bar button { white-space: nowrap; }
+@media (max-width: 760px) { .present-bar { font-size: 14px; gap: 8px; padding: 8px 10px; } .present-bar .caption { display: none; } }
