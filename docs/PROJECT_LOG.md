@@ -1,9 +1,11 @@
 # VAYUNX Crypto Profiler: project log
 
 What was asked, what was decided and what was built, phase by phase, from the build brief (19 September 2026)
-to the end of Phase 4 (20 September 2026).
+to the end of Phase 4, and then publishing, hosting and the demo (all 20 September 2026).
 
-- **Repository:** `vayunx-profiler-service` (git, branch `main`, 28 commits). Nothing was pushed or published.
+- **Repository:** `vayunx-profiler-service` (git, branch `main`, 31 commits), pushed with the user's explicit
+  yes on 20 September 2026 to https://github.com/rajjnishbhati/VayuNx_Performace_Application (public).
+  Nothing is published to a package registry.
 - **Machine used for all measurements:** Intel Core i5-8400H (4 cores / 8 threads), 7.8 GiB RAM,
   Windows 11 Pro 10.0.26200, Python 3.13.9 (OpenSSL 3.5.6), Node.js 24.15.0 (OpenSSL 3.5.5).
 
@@ -180,3 +182,87 @@ The user picks two or more algorithms (for example MD5 and Argon2id) and sees wh
   - macOS
   - the Next.js Edge runtime
 - **Package names** (`vayunx`, `@vayunx/profiler`): still undecided; only needed before publishing.
+
+---
+
+## 8. After Phase 4: publishing, hosting and showing it (20 September 2026)
+
+### 8.1 Checked in to GitHub
+
+- Asked first; the user chose **push now, public**, and **only `vayunx-profiler-service`** (not `vayunx-perf-demo`).
+- Scanned before pushing: no secrets, no large files, no databases or logs (`.db`, `ops/logs/`, `.venv`, `node_modules`
+  are ignored). The repository was empty, so `main` was pushed as it stood.
+- Remote: https://github.com/rajjnishbhati/VayuNx_Performace_Application
+
+### 8.2 Hosting: this PC, published by Cloudflare Tunnel
+
+The Profiler cannot run serverless - it needs real Python with native crypto, a fresh worker process per trial, and
+a machine whose CPU it can measure. Shared serverless CPU would make every number meaningless. So the app runs here
+and Cloudflare publishes it. See [HOSTING.md](HOSTING.md).
+
+| Piece | Where | Note |
+|---|---|---|
+| Service (FastAPI) | 127.0.0.1:8010 | loopback only |
+| UI (Next.js production build) | 127.0.0.1:3000 | proxies `/api` to the Service |
+| Start both | `ops\start-vayunx.ps1` | also a scheduled task, **VAYUNX Profiler**, at sign-in |
+| Public URL | Cloudflare **Quick Tunnel** | https://treaty-suffering-insertion-docs.trycloudflare.com |
+
+- The user does not own a domain, so a Quick Tunnel was used: no zone needed, but the hostname is **random and
+  temporary** - it changes whenever `cloudflared` restarts, and it cannot be protected by Zero Trust Access
+  (Access applications need a zone you own). The log `ops\logs\quick-tunnel.log` always holds the current name.
+- `cloudflared tunnel list` does not work on this machine and does not need to: the named tunnel
+  `Benchmark_Application` is token-managed by the Windows service, and account-level commands need a `cert.pem`
+  from `cloudflared tunnel login`, which was deliberately not run. Quick Tunnels never appear in that list anyway.
+- The user was told the URL is unauthenticated - anyone with the link can open it, including the retention
+  controls, which can delete data - and chose to leave it that way for the demo.
+
+### 8.3 Presentation mode (commit `9b1b292`)
+
+Six UI improvements were offered; the user approved **one**, for an audience of engineers and leadership together.
+A **Presentation** toggle in the header hides the navigation, enlarges type and tables, and steps through a result
+in five plain-language stops - Headline, In the code, On the machine, Security, At your traffic - switching the tab
+each stop needs. Arrow keys, PageUp/PageDown (presenter remotes) and Escape work; typing in the what-if boxes is
+never intercepted, so the login rate can be changed live. Stored per browser and applied before first paint.
+It changes presentation only: no number, API call or stored result differs. Documented in `web/README.md`.
+
+**Not built (deliberately, awaiting approval):** tab subtitles and tooltips, chart hover tooltips, what-if rate
+presets, a better "My app" empty state, comparison history.
+
+### 8.4 The TLS / PQC grade question
+
+The user's VAYUNX scanner graded the hosted URL **D (55/100)**. Measured directly instead of guessing:
+
+| What | Measured on 20 September 2026 |
+|---|---|
+| Protocol | TLS 1.3 |
+| Cipher | TLS_AES_256_GCM_SHA384 (AEAD, 256-bit) |
+| Key agreement | **X25519MLKEM768** - hybrid ML-KEM-768 + X25519, i.e. already post-quantum |
+| Certificate | ECDSA P-256 / SHA-256, Google Trust Services WE1, valid to 5 November 2026 |
+| Security headers | none: no HSTS, CSP, X-Content-Type-Options, Referrer-Policy; `x-powered-by` leaks the stack |
+
+Method: `openssl s_client -connect <host>:443 -servername <host> -groups X25519MLKEM768 -tls1_3` (OpenSSL 3.5.7),
+`https://<host>/cdn-cgi/trace`, and Python's `ssl` for protocol, cipher and certificate.
+
+**The D is a measurement artefact, not weak crypto.** The scanner's client is the browser, and JavaScript cannot
+read the negotiated TLS version, cipher suite or group - no API exposes it. Hence "Protocol N/A", an empty
+Key Exchange and "Valid (-d remaining)", which the score treats as failures.
+
+Recommended, in order: (1) probe the handshake server-side (`/cdn-cgi/trace` or `openssl s_client`);
+(2) put a domain on Cloudflare - a Quick Tunnel gives no TLS control at all and a shared certificate, which caps
+the grade; (3) run `cloudflared --post-quantum` so the tunnel leg is PQ too; (4) add the HTTP security headers in
+`web/next.config.ts`. Items 3 and 4 were offered and are **not yet approved**.
+
+**Ceiling worth knowing:** post-quantum *authentication* is not available on the public web - no public CA issues
+ML-DSA or SLH-DSA certificates and no browser trusts them. "PQC Grade A" today means hybrid PQ key agreement plus
+classical signatures plus crypto agility. A rubric that demands a PQ certificate cannot be passed by anyone.
+
+### 8.5 Working agreement for changes from here
+
+Proposed changes are listed and numbered; nothing is touched until the user approves an item. Once approved, the
+whole round trip is done without asking again: edit, `npx next build`, restart the UI, commit, push to `main`, and
+confirm the change is live on the public URL - then report what changed, the commit hash and the URL to check.
+
+### 8.6 Housekeeping still waiting on a yes
+
+- Six `profiler-backup-*.db` files in the project folder can be deleted once the user is satisfied.
+- Stopping the Quick Tunnel closes the public URL; a restart produces a different hostname.
