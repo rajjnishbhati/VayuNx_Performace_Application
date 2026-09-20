@@ -205,11 +205,14 @@ and Cloudflare publishes it. See [HOSTING.md](HOSTING.md).
 | Service (FastAPI) | 127.0.0.1:8010 | loopback only |
 | UI (Next.js production build) | 127.0.0.1:3000 | proxies `/api` to the Service |
 | Start both | `ops\start-vayunx.ps1` | also a scheduled task, **VAYUNX Profiler**, at sign-in |
-| Public URL | Cloudflare **Quick Tunnel** | https://treaty-suffering-insertion-docs.trycloudflare.com |
+| Public URL | Cloudflare **Quick Tunnel** | random `*.trycloudflare.com` name; the current one is in `ops\logs\quick-tunnel.log` |
 
 - The user does not own a domain, so a Quick Tunnel was used: no zone needed, but the hostname is **random and
   temporary** - it changes whenever `cloudflared` restarts, and it cannot be protected by Zero Trust Access
   (Access applications need a zone you own). The log `ops\logs\quick-tunnel.log` always holds the current name.
+- This is not theoretical: the first hostname died the same day. Cloudflare dropped the registration, DNS went
+  NXDOMAIN, and `cloudflared` sat retrying a tunnel that no longer existed while the app itself was healthy.
+  Only a restart fixes it, and a restart always means a new hostname. **Check the log, never reuse an old URL.**
 - `cloudflared tunnel list` does not work on this machine and does not need to: the named tunnel
   `Benchmark_Application` is token-managed by the Windows service, and account-level commands need a `cert.pem`
   from `cloudflared tunnel login`, which was deliberately not run. Quick Tunnels never appear in that list anyway.
