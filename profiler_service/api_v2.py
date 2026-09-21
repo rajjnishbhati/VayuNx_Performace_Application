@@ -204,14 +204,23 @@ def _lab_trials(session: Session, exp_id: str) -> list[TrialInput]:
     out = []
     for tr, op in rows:
         preset = get_preset(tr.preset_id)
+        stored = json.loads(tr.result_json)  # the worker's own result: sizes and exact percentiles live here
         out.append(TrialInput(variant_key=preset.id, variant_label=preset.label, trial_index=tr.trial_index,
                               histogram=json.loads(op.histogram_json), wall_s=tr.wall_s, cpu_s_per_op=tr.cpu_s_per_op,
                               cores_busy=tr.cores_busy, peak_rss_bytes=tr.peak_rss_bytes,
                               rss_before_bytes=tr.rss_before_bytes, noisy=bool(tr.noisy),
                               timer_overhead_ns=tr.timer_overhead_ns, concurrency=tr.concurrency,
                               family=preset.family, security=security_note(preset),
-                              exact_percentiles=json.loads(tr.result_json).get("exact_percentiles")))
+                              operation=preset.operation,
+                              wire_label=stored.get("wire_label"), wire_bytes=stored.get("wire_bytes"),
+                              exact_percentiles=stored.get("exact_percentiles")))
     return out
+
+
+def _op_noun(trials: list[TrialInput]) -> str:
+    """What one operation is called in the verdict. "per hash" is right for MD5 and Argon2id and wrong for
+    a key exchange, so anything that is not a hash gets the neutral word."""
+    return "hash" if all(t.family in ("fast-hash", "password-hash", None) for t in trials) else "operation"
 
 
 MIN_CPU_SPAN_COVERAGE = 0.5  # per-call CPU is used only if CPU-timed spans cover at least half the calls
@@ -338,7 +347,7 @@ def compare_v2(session: SessionDep, access: AccessDep, experiment_id: str | None
         ref = reference or exp.reference_preset
         try:
             result = compare(trials, ref, rate_per_s=rate, cores_total=cores or env.get("cpu_count_logical") or os.cpu_count() or 1,
-                             source="lab", op_noun="hash")
+                             source="lab", op_noun=_op_noun(trials))
         except ValueError as exc:
             raise problem(422, str(exc), "Choose a reference that is one of the experiment's presets.") from None
         result["experiment"] = experiment_out(exp)

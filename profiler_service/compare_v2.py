@@ -47,8 +47,11 @@ class TrialInput:
     noisy: bool = False
     timer_overhead_ns: float | None = None
     concurrency: int = 1
-    family: str | None = None  # "password-hash" | "fast-hash" | None
+    family: str | None = None  # "password-hash" | "fast-hash" | "kem" | "signature" | None
     security: dict | None = None
+    operation: str | None = None  # hash | keygen | encapsulate | decapsulate | sign | verify
+    wire_label: str | None = None  # what this operation puts on the wire, e.g. "signature"
+    wire_bytes: int | None = None  # and how big it is: the other half of a post-quantum migration's cost
     peak_rss_approximate: bool = False
     exact_percentiles: dict | None = None  # {"p25_ns","p50_ns","p75_ns","p95_ns","p99_ns"} from raw durations
     extra: dict = field(default_factory=dict)
@@ -99,6 +102,8 @@ def aggregate_variant(trials: list[TrialInput]) -> dict:
     cpu_s_per_op = _median([t.cpu_s_per_op for t in trials])
     row = {
         "key": first.variant_key, "label": first.variant_label, "family": first.family, "security": first.security,
+        "operation": first.operation,
+        "wire": {"label": first.wire_label, "bytes": first.wire_bytes} if first.wire_bytes else None,
         "trials": len(per_trial),
         "time_per_call": {
             "median_ns": median_ns, "p50_ns": median_ns,
@@ -190,6 +195,19 @@ def capacity(row: dict, rate_per_s: float, cores_total: int, reference: dict | N
     }
 
 
+def _is_post_quantum(row: dict) -> bool:
+    return bool(row.get("security") or {}) and (row["security"].get("quantum") == "post-quantum")
+
+
+def _wire_change(row: dict, ref: dict) -> str:
+    """" and puts 2,420 bytes on the wire where ECDSA P-256 puts 71" - the other half of the migration cost."""
+    mine, theirs = row.get("wire"), ref.get("wire")
+    if not mine or not theirs or not mine.get("bytes") or not theirs.get("bytes"):
+        return ""
+    return (f", and puts {mine['bytes']:,} bytes on the wire where {ref['label']} puts {theirs['bytes']:,}"
+            if mine["bytes"] != theirs["bytes"] else "")
+
+
 def _verdict(rows: list[dict], ref: dict, op_noun: str) -> str:
     parts = []
     for row in rows:
@@ -207,6 +225,19 @@ def _verdict(rows: list[dict], ref: dict, op_noun: str) -> str:
         elif vs["time_ratio"] > 1 and row.get("family") == "password-hash" and ref.get("family") != "password-hash":
             parts.append(f"{row['label']} is {vs['time_change']} than {ref['label']}, which is expected: "
                          "password hashes are slow on purpose.")
+        elif _is_post_quantum(row) and not _is_post_quantum(ref):
+            # What the extra time and bytes buy is the point of the comparison, so say it in the verdict.
+            # "×" reads as "2.2× slower than X"; a percentage has to read as "differs from X by +51.5%".
+            change = (f"is {vs['time_change']} than {ref['label']}" if "×" in vs["time_change"]
+                      else f"differs from {ref['label']} by {vs['time_change']} per {op_noun}")
+            parts.append(f"{row['label']} {change}{_wire_change(row, ref)}, in exchange for resistance "
+                         "to a future quantum computer.")
+        elif _is_post_quantum(ref) and not _is_post_quantum(row):
+            # The same comparison read the other way round: cheaper, but it is the one being migrated away from.
+            change = (f"is {vs['time_change']} than {ref['label']}" if "×" in vs["time_change"]
+                      else f"differs from {ref['label']} by {vs['time_change']} per {op_noun}")
+            parts.append(f"{row['label']} {change}{_wire_change(row, ref)}, but does not resist a future "
+                         "quantum computer.")
         elif "×" in vs["time_change"]:  # e.g. the same password hash in two runtimes: the difference is the finding
             parts.append(f"{row['label']} is {vs['time_change']} than {ref['label']}.")
         else:

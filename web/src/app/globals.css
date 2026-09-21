@@ -137,6 +137,7 @@ input, select { font: inherit; color: var(--ink); background: var(--surface); bo
 .badge.good { color: var(--good-ink); }
 .badge.critical { color: var(--critical-ink); }
 .badge.neutral { color: var(--ink-2); }
+.badge.warning { color: var(--warning-ink); }
 
 .flag { display: inline-flex; align-items: center; gap: 4px; color: var(--warning-ink); font-size: 12px; font-weight: 600; border: 0; background: transparent; padding: 0 2px; }
 .flag-list { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }

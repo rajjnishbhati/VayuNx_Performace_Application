@@ -14,6 +14,9 @@ from __future__ import annotations
 from vayunx_lab.presets import Preset
 
 REFERENCE = "OWASP Password Storage Cheat Sheet (checked 2026-09-19; re-check before shipping)"
+# Password-storage advice says nothing about key agreement or signatures, so those cite the standards
+# that define them instead.
+REFERENCE_PQ = ("NIST FIPS 203 (ML-KEM) and FIPS 204 (ML-DSA), with NSA CNSA 2.0 for timelines (checked 2026-09-21; re-check before shipping)")
 
 _NOTES = {
     "md5": (False, False, "Fast hash: not suitable for password storage. Fine only for non-security checksums."),
@@ -153,6 +156,8 @@ def note_for_algorithm(algorithm: str | None, params: str | None = None) -> dict
 
 def security_note(preset: Preset) -> dict:
     safe, meets_minimum, summary = _NOTES[preset.base_id]
+    quantum = _QUANTUM.get(preset.base_id, QUANTUM_SYMMETRIC)
     return {"algorithm": preset.algorithm, "params": preset.params, "safe_for_passwords": safe,
-            "meets_owasp_minimum": meets_minimum, "summary": summary, "reference": REFERENCE,
-            "quantum": _QUANTUM.get(preset.base_id, QUANTUM_SYMMETRIC)}
+            "meets_owasp_minimum": meets_minimum, "summary": summary,
+            "reference": REFERENCE if quantum == QUANTUM_SYMMETRIC else REFERENCE_PQ,
+            "quantum": quantum}

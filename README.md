@@ -319,6 +319,51 @@ Run: 5 interleaved trials × 10 s per algorithm, started from the UI; 121 s tota
 - **Estimate at 100 logins/s:** about 19 cores (233 % of this 8-thread machine) and 359 MiB RAM in flight.
 - **Earlier runs on the same machine** gave Argon2id medians of 56.6 ms and 61.2 ms. Numbers vary between runs, and a different machine will differ more.
 
+## Post-quantum: what the migration costs (Phase 5)
+
+The Lab measures ML-KEM-768 (FIPS 203) and ML-DSA-44/65 (FIPS 204) beside the classical algorithms they
+replace, so "what does going post-quantum cost us?" is answered with numbers from this machine rather than a
+vendor slide. No extra dependency: `cryptography` 50.0.1 (OpenSSL 3.5.6) and `node:crypto` (Node 24.15,
+OpenSSL 3.5.5) provide all of it.
+
+| Preset | Operation | On the wire |
+|---|---|---|
+| `mlkem768-keygen` / `-encap` / `-decap` | ML-KEM-768 key agreement | public key 1,184 B, ciphertext 1,088 B |
+| `x25519-keygen` / `x25519-exchange` | the classical it is paired with | public key 32 B |
+| `mldsa44-sign` / `-verify`, `mldsa65-sign` / `-verify` | ML-DSA signatures | 2,420 B (44), 3,309 B (65) |
+| `ecdsa-p256-sign` / `-verify`, `rsa2048-sign` / `-verify` | the classical signatures in use today | 71 B, 256 B |
+
+Each preset times **one primitive** with the key material built beforehand, because that is how a handshake
+spends it: a server keeps a key and encapsulates or signs per connection. Add `@node` to run any of them on
+Node.js. The sizes are measured from real key material outside the timing loop, not quoted.
+
+### Measured on this machine
+
+5 interleaved trials × 6 s per algorithm on the i5-8400H, on a machine that was **not quiet** (every trial is
+flagged noisy - Chrome was running), so read the ratios rather than the absolute numbers.
+
+| Comparison | Classical | Post-quantum | Change | Bytes |
+|---|---|---|---|---|
+| Key agreement | X25519 exchange **36.5 µs** | ML-KEM-768 encapsulate **55.3 µs** | +51.5 % | 32 B → 1,088 B |
+| Signing | ECDSA P-256 **34.7 µs** | ML-DSA-44 **656 µs** | 19× slower | 71 B → 2,420 B |
+| Verifying | ECDSA P-256 **75.7 µs** | ML-DSA-44 **168 µs** | 2.2× slower | 72 B → 2,420 B |
+
+Three things those numbers say that the headline does not:
+
+- **Key agreement is the cheap part, and it is the urgent one.** 19 µs more per connection buys protection
+  against "harvest now, decrypt later" - traffic recorded today and decrypted when a quantum computer exists.
+- **ML-DSA signing has a long tail.** Its p95 was **2.04 ms** against a 656 µs median, because ML-DSA signing
+  retries until the signature passes its bounds checks. Capacity planning has to use the tail, not the median.
+- **Verification is the operation that scales**, since every request checks a signature while only the issuer
+  signs. 2.2× on verification is a very different budget conversation from 19× on signing.
+
+### What cannot be measured here, and why
+
+**Post-quantum authentication is not available on the public web.** No public CA issues ML-DSA or SLH-DSA
+certificates and no browser trusts them, so "PQC grade A" today means hybrid post-quantum *key agreement* plus
+classical signatures plus crypto agility. The Lab measures ML-DSA because internal tokens, firmware and code
+signing can move now - not because a public TLS certificate can.
+
 ## Profile your own app: SDKs on OpenTelemetry (Phase 3)
 
 Phase 3 answers the same question for a **real application**: run it once with MD5 and once with

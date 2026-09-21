@@ -7,6 +7,8 @@ export type Security = {
   meets_owasp_minimum: boolean | null;
   summary: string;
   reference: string;
+  /** Standing against a future quantum computer. "symmetric" = a hash or KDF, which is not at risk. */
+  quantum?: "post-quantum" | "classical" | "symmetric";
 };
 
 export type Preset = {
@@ -14,8 +16,9 @@ export type Preset = {
   label: string;
   algorithm: string;
   params: string;
-  family: "fast-hash" | "password-hash";
+  family: "fast-hash" | "password-hash" | "kem" | "signature";
   salted: boolean;
+  operation?: "hash" | "keygen" | "encapsulate" | "decapsulate" | "sign" | "verify";
   library: string;
   security: Security;
   runtime?: "python" | "node";
@@ -62,6 +65,9 @@ export type Variant = {
   label: string;
   family: string | null;
   security: Security | null;
+  operation?: string | null;
+  /** What one operation puts on the wire, measured from real key material. Null for hashes. */
+  wire?: { label: string; bytes: number } | null;
   trials: number;
   is_reference: boolean;
   time_per_call: {

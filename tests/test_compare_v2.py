@@ -20,14 +20,16 @@ def hist(center_ns: float, n: int = 400, spread: float = 0.05) -> dict:
 
 
 def trials(key, label, centers, *, cpu_s_per_op=None, peak=None, before=30 * MIB, noisy=(), ops=400,
-           timer_overhead_ns=50.0, family="password-hash", cores_busy=1.0, preset_id=None):
+           timer_overhead_ns=50.0, family="password-hash", cores_busy=1.0, preset_id=None,
+           wire_label=None, wire_bytes=None):
     sec = security_note(get_preset(preset_id)) if preset_id else None
     out = []
     for i, c in enumerate(centers):
         out.append(TrialInput(variant_key=key, variant_label=label, trial_index=i, histogram=hist(c, n=ops),
                               wall_s=10.0, cpu_s_per_op=cpu_s_per_op if cpu_s_per_op is not None else c / 1e9,
                               cores_busy=cores_busy, peak_rss_bytes=peak or before, rss_before_bytes=before,
-                              noisy=i in noisy, timer_overhead_ns=timer_overhead_ns, family=family, security=sec))
+                              noisy=i in noisy, timer_overhead_ns=timer_overhead_ns, family=family, security=sec,
+                              wire_label=wire_label, wire_bytes=wire_bytes))
     return out
 
 
@@ -165,3 +167,45 @@ def test_verdict_between_two_password_hashes_states_the_difference_plainly():
     assert re.search(r"Argon2id \(Node\.js\) is 2\.\d× slower than Argon2id \(Python\)\.", v)
     v = compare(py + node, reference_key="argon2id-owasp@node")["verdict"]
     assert re.search(r"Argon2id \(Python\) is 2\.\d× faster than Argon2id \(Node\.js\)\.", v)
+
+
+def test_post_quantum_verdict_names_what_the_extra_cost_buys():
+    """A post-quantum algorithm being slower is the expected trade, not a finding - and the size difference
+    is half the migration cost, so the verdict has to carry it."""
+    t = (trials("mldsa44-sign", "ML-DSA-44 sign", [1_580_000] * 3, family="signature",
+                preset_id="mldsa44-sign", wire_label="signature", wire_bytes=2420)
+         + trials("ecdsa-p256-sign", "ECDSA P-256 sign", [71_000] * 3, family="signature",
+                  preset_id="ecdsa-p256-sign", wire_label="signature (DER)", wire_bytes=71))
+    out = compare(t, "ecdsa-p256-sign", op_noun="operation")
+
+    assert "resistance to a future quantum computer" in out["verdict"]
+    assert "2,420 bytes on the wire where ECDSA P-256 sign puts 71" in out["verdict"]
+    assert "slow on purpose" not in out["verdict"]  # that sentence belongs to password hashes only
+
+    row = next(v for v in out["variants"] if v["key"] == "mldsa44-sign")
+    assert row["wire"] == {"label": "signature", "bytes": 2420}
+    assert row["security"]["quantum"] == "post-quantum"
+
+
+def test_classical_against_classical_says_nothing_about_quantum():
+    t = (trials("rsa2048-sign", "RSA-2048 sign", [900_000] * 3, family="signature", preset_id="rsa2048-sign",
+                wire_label="signature", wire_bytes=256)
+         + trials("ecdsa-p256-sign", "ECDSA P-256 sign", [71_000] * 3, family="signature",
+                  preset_id="ecdsa-p256-sign", wire_label="signature (DER)", wire_bytes=71))
+    out = compare(t, "ecdsa-p256-sign", op_noun="operation")
+    assert "quantum" not in out["verdict"]
+
+
+def test_verdict_reads_both_ways_round():
+    """With the classical algorithm as the reference - which is how the migration quick picks set it up -
+    the sentence has to run the other way and still say what is at stake."""
+    t = (trials("mlkem768-encap", "ML-KEM-768 encapsulate", [55_300] * 3, family="kem", preset_id="mlkem768-encap",
+                wire_label="ciphertext", wire_bytes=1088)
+         + trials("x25519-exchange", "X25519 exchange", [36_500] * 3, family="kem", preset_id="x25519-exchange",
+                  wire_label="public key", wire_bytes=32))
+    forward = compare(t, "x25519-exchange", op_noun="operation")["verdict"]
+    assert "in exchange for resistance to a future quantum computer" in forward
+
+    backward = compare(t, "mlkem768-encap", op_noun="operation")["verdict"]
+    assert "does not resist a future quantum computer" in backward
+    assert "32 bytes on the wire where ML-KEM-768 encapsulate puts 1,088" in backward

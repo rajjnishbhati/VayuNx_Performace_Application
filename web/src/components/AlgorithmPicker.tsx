@@ -11,6 +11,11 @@ export const QUICK_PICKS: { label: string; presets: string[] }[] = [
   { label: "SHA-256 → Argon2id (OWASP min)", presets: ["sha256", "argon2id-owasp"] },
   { label: "Password hashes side by side", presets: ["argon2id-owasp", "bcrypt-10", "scrypt-n17", "pbkdf2-sha256-600k"] },
   { label: "Argon2id: Python vs Node.js", presets: ["argon2id-owasp", "argon2id-owasp@node"] },
+  // The post-quantum migration, one click each: key agreement first (the urgent one, because recorded
+  // traffic can be decrypted later), then signing and verifying.
+  { label: "X25519 → ML-KEM-768", presets: ["x25519-exchange", "mlkem768-encap"] },
+  { label: "ECDSA P-256 → ML-DSA-44 (sign)", presets: ["ecdsa-p256-sign", "mldsa44-sign"] },
+  { label: "ECDSA P-256 → ML-DSA-44 (verify)", presets: ["ecdsa-p256-verify", "mldsa44-verify"] },
 ];
 
 type Props = {

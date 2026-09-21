@@ -29,6 +29,13 @@ function ChartTableToggle({ value, onChange }: { value: "chart" | "table"; onCha
 function Scorecard({ r, colors, onReference }: { r: CompareResult; colors: Record<string, string>; onReference?: (k: string) => void }) {
   const ref = r.variants.find((v) => v.is_reference)!;
   const exp = r.experiment;
+  // Key agreement and signatures cost bytes as well as time, and for a post-quantum migration the bytes
+  // are often the harder half. The column appears only when something in this comparison has them.
+  const showsWire = r.variants.some((v) => v.wire?.bytes);
+  // Keep the familiar heading for a comparison of hashes; widen it only when a key agreement or
+  // signature is present, where the question is quantum standing rather than password fitness.
+  const securityHeading = r.variants.every((v) => !v.security || v.security.quantum === "symmetric" || !v.security.quantum)
+    ? "Safe for passwords" : "Security";
   return (
     <div className="scroll-x">
       <table className="data">
@@ -42,7 +49,8 @@ function Scorecard({ r, colors, onReference }: { r: CompareResult; colors: Recor
             <th scope="col" className="num">Time per call</th>
             <th scope="col" className="num">CPU cores busy</th>
             <th scope="col" className="num">Peak RAM</th>
-            <th scope="col">Safe for passwords</th>
+            {showsWire && <th scope="col" className="num">Bytes on the wire</th>}
+            <th scope="col">{securityHeading}</th>
             <th scope="col">Change</th>
           </tr>
         </thead>
@@ -64,6 +72,12 @@ function Scorecard({ r, colors, onReference }: { r: CompareResult; colors: Recor
               <td className="num">
                 {v.memory.approximate ? "≈ " : ""}{fmtBytes(v.memory.peak_rss_bytes)} <FlagNote flags={flagsFor(v.flags, "peak_ram")} />
               </td>
+              {showsWire && (
+                <td className="num">
+                  {v.wire ? <><b>{v.wire.bytes.toLocaleString()} B</b><div className="muted" style={{ fontSize: 12 }}>{v.wire.label}</div></>
+                          : <span className="muted">not applicable</span>}
+                </td>
+              )}
               <td><SecurityBadge security={v.security} /></td>
               <td>{v.is_reference ? <span className="muted">reference</span> : v.vs_reference?.time_change}</td>
             </tr>
@@ -161,7 +175,8 @@ function MachineTab({ r, ts, tsLoading, colors }: { r: CompareResult; ts: Timese
 }
 
 function SecurityTab({ r, colors }: { r: CompareResult; colors: Record<string, string> }) {
-  const refText = r.variants.find((v) => v.security)?.security?.reference;
+  // Different algorithms cite different standards, and a comparison can mix them.
+  const sources = [...new Set(r.variants.map((v) => v.security?.reference).filter(Boolean))] as string[];
   return (
     <div className="stack">
       {r.variants.map((v) => (
@@ -174,14 +189,19 @@ function SecurityTab({ r, colors }: { r: CompareResult; colors: Record<string, s
             <>
               <p style={{ marginTop: 8 }}>{v.security.summary}</p>
               <p className="muted" style={{ fontSize: 13, margin: 0 }}>
-                Parameters: <code>{v.security.params || "none"}</code> · Meets the OWASP minimum:{" "}
-                {v.security.meets_owasp_minimum == null ? "not checked" : v.security.meets_owasp_minimum ? "yes" : "no"}
+                Parameters: <code>{v.security.params || "none"}</code>
+                {/* The OWASP password-storage minimums say nothing about a key agreement or a signature,
+                    so the line is left out rather than answered with "not checked". */}
+                {(!v.security.quantum || v.security.quantum === "symmetric") && <>
+                  {" · Meets the OWASP minimum: "}
+                  {v.security.meets_owasp_minimum == null ? "not checked" : v.security.meets_owasp_minimum ? "yes" : "no"}
+                </>}
               </p>
             </>
           ) : <p className="muted">No security reference is known for this algorithm.</p>}
         </div>
       ))}
-      {refText && <p className="muted" style={{ fontSize: 12 }}>Source: {refText}.</p>}
+      {sources.map((src) => <p key={src} className="muted" style={{ fontSize: 12, margin: 0 }}>Source: {src}.</p>)}
     </div>
   );
 }
