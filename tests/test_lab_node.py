@@ -59,6 +59,28 @@ def test_node_worker_runs_password_hash_presets_with_the_same_parameters():
 
 
 @needs_node
+@pytest.mark.parametrize("preset_id, wire_label, wire_bytes", [
+    ("mlkem768-keygen", "public key", 1184),
+    ("mlkem768-encap", "ciphertext", 1088),
+    ("mlkem768-decap", "ciphertext", 1088),
+    ("x25519-keygen", "public key", 32),
+    ("mldsa44-sign", "signature", 2420),
+    ("mldsa65-verify", "signature", 3309),
+    ("rsa2048-sign", "signature", 256),
+])
+def test_node_worker_measures_the_post_quantum_presets_and_their_sizes(preset_id, wire_label, wire_bytes):
+    """The sizes are fixed by FIPS 203/204, so Node.js must report exactly what the Python twin reports -
+    otherwise a Python-vs-Node comparison of a migration would be comparing different things."""
+    code, events, err = run_worker("--preset", preset_id, "--duration", "0.3", "--warmup", "0.1")
+    assert code == 0, err
+    r = events[-1]
+    assert (r["wire_label"], r["wire_bytes"]) == (wire_label, wire_bytes)
+    assert r["wire_bytes"] == get_preset(preset_id).wire_size()[1]
+    assert r["operation"] == get_preset(preset_id).operation
+    assert r["ops"] > 0 and r["p50_ns"] > 0
+
+
+@needs_node
 def test_node_worker_refuses_unknown_presets_and_bad_arguments():
     code, events, _ = run_worker("--preset", "rm -rf /", "--duration", "1")
     assert code == 2 and events[-1]["event"] == "error" and "unknown preset" in events[-1]["error"]

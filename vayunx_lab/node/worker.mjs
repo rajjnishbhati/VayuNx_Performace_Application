@@ -36,6 +36,34 @@ function libVersion(name) {
 }
 
 const NODE_CRYPTO = `node:crypto (node ${process.versions.node}, OpenSSL ${process.versions.openssl})`;
+const SYNTHETIC_MESSAGE = Buffer.from("vayunx-lab synthetic message 0001"); // same bytes as presets.py
+const c = crypto; // shorthand, so the preset table below stays readable
+
+// The raw public key, as TLS puts it in a key_share - not the DER wrapper. Node has no JWK export for
+// ML-KEM, so walk the SPKI: SEQUENCE { AlgorithmIdentifier, BIT STRING }, and drop the unused-bits byte.
+// This keeps the sizes comparable with the Python twin, which reads them straight from the key object.
+function rawPublicKey(key) {
+  const der = key.export({ type: "spki", format: "der" });
+  let i = 0;
+  const length = () => {
+    let n = der[i++];
+    if (n & 0x80) {
+      const octets = n & 0x7f;
+      n = 0;
+      for (let j = 0; j < octets; j++) n = n * 256 + der[i++];
+    }
+    return n;
+  };
+  if (der[i++] !== 0x30) return null;
+  length();
+  if (der[i++] !== 0x30) return null;
+  // Two statements on purpose: `i += length()` would read i before length() advanced it.
+  const algorithmBytes = length();
+  i += algorithmBytes; // AlgorithmIdentifier: the OID says which algorithm, and we already know
+  if (der[i++] !== 0x03) return null;
+  const n = length();
+  return der.subarray(i + 1, i + n);
+}
 
 // id -> [algorithm, params (as in presets.py), library label, min_ops, build() -> op]
 const PRESETS = {
@@ -49,7 +77,73 @@ const PRESETS = {
     () => () => scryptSync(SYNTHETIC_PASSWORD, randomBytes(SALT_LEN), 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 })],
   "argon2id-owasp": ["Argon2id", "m=19456,t=2,p=1", () => NODE_CRYPTO, 10, () => argon2Op(19456, 2, 1)],
   "argon2id-rfc9106-low": ["Argon2id", "m=65536,t=3,p=4", () => NODE_CRYPTO, 10, () => argon2Op(65536, 3, 4)],
+
+  // Post-quantum and the classical it replaces. Same rule as the Python twin: the key material is built
+  // before timing starts, so each preset measures one primitive, the way a handshake spends it.
+  "mlkem768-keygen": ["ML-KEM-768", "level=3", () => NODE_CRYPTO, 0, () => () => c.generateKeyPairSync("ml-kem-768"),
+    "keygen", () => ["public key", rawPublicKey(c.generateKeyPairSync("ml-kem-768").publicKey).length]],
+  "mlkem768-encap": ["ML-KEM-768", "level=3", () => NODE_CRYPTO, 0, () => kemOp("encapsulate"),
+    "encapsulate", () => ["ciphertext", kemCiphertext().length]],
+  "mlkem768-decap": ["ML-KEM-768", "level=3", () => NODE_CRYPTO, 0, () => kemOp("decapsulate"),
+    "decapsulate", () => ["ciphertext", kemCiphertext().length]],
+  "x25519-keygen": ["X25519", "", () => NODE_CRYPTO, 0, () => () => c.generateKeyPairSync("x25519"),
+    "keygen", () => ["public key", rawPublicKey(c.generateKeyPairSync("x25519").publicKey).length]],
+  "x25519-exchange": ["X25519", "", () => NODE_CRYPTO, 0, () => x25519ExchangeOp(),
+    "encapsulate", () => ["public key", rawPublicKey(c.generateKeyPairSync("x25519").publicKey).length]],
+  "mldsa44-sign": ["ML-DSA-44", "level=2", () => NODE_CRYPTO, 0, () => signOp("ml-dsa-44", null, false),
+    "sign", () => signatureSize("ml-dsa-44", null)],
+  "mldsa44-verify": ["ML-DSA-44", "level=2", () => NODE_CRYPTO, 0, () => signOp("ml-dsa-44", null, true),
+    "verify", () => signatureSize("ml-dsa-44", null)],
+  "mldsa65-sign": ["ML-DSA-65", "level=3", () => NODE_CRYPTO, 0, () => signOp("ml-dsa-65", null, false),
+    "sign", () => signatureSize("ml-dsa-65", null)],
+  "mldsa65-verify": ["ML-DSA-65", "level=3", () => NODE_CRYPTO, 0, () => signOp("ml-dsa-65", null, true),
+    "verify", () => signatureSize("ml-dsa-65", null)],
+  "ecdsa-p256-sign": ["ECDSA P-256", "hash=SHA-256", () => NODE_CRYPTO, 0, () => signOp("ec", "sha256", false),
+    "sign", () => signatureSize("ec", "sha256", "signature (DER)")],
+  "ecdsa-p256-verify": ["ECDSA P-256", "hash=SHA-256", () => NODE_CRYPTO, 0, () => signOp("ec", "sha256", true),
+    "verify", () => signatureSize("ec", "sha256", "signature (DER)")],
+  "rsa2048-sign": ["RSA-2048 PKCS#1 v1.5", "hash=SHA-256", () => NODE_CRYPTO, 0, () => signOp("rsa", "sha256", false),
+    "sign", () => signatureSize("rsa", "sha256")],
+  "rsa2048-verify": ["RSA-2048 PKCS#1 v1.5", "hash=SHA-256", () => NODE_CRYPTO, 0, () => signOp("rsa", "sha256", true),
+    "verify", () => signatureSize("rsa", "sha256")],
 };
+
+function keyPair(kind) {
+  if (kind === "ec") return c.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  if (kind === "rsa") return c.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  return c.generateKeyPairSync(kind);
+}
+
+function kemCiphertext() {
+  return c.encapsulate(c.generateKeyPairSync("ml-kem-768").publicKey).ciphertext;
+}
+
+function kemOp(which) {
+  const { publicKey, privateKey } = c.generateKeyPairSync("ml-kem-768");
+  if (which === "encapsulate") return () => c.encapsulate(publicKey);
+  const { ciphertext } = c.encapsulate(publicKey);
+  return () => c.decapsulate(privateKey, ciphertext);
+}
+
+function x25519ExchangeOp() {
+  const mine = c.generateKeyPairSync("x25519");
+  const peer = c.generateKeyPairSync("x25519");
+  return () => c.diffieHellman({ privateKey: mine.privateKey, publicKey: peer.publicKey });
+}
+
+// RSA-2048 PKCS#1 v1.5 is what RS256 signs with, and it is Node's default padding for an RSA key.
+function signOp(kind, digest, verify) {
+  const { publicKey, privateKey } = keyPair(kind);
+  if (!verify) return () => c.sign(digest, SYNTHETIC_MESSAGE, privateKey);
+  const signature = c.sign(digest, SYNTHETIC_MESSAGE, privateKey);
+  return () => {
+    if (!c.verify(digest, SYNTHETIC_MESSAGE, publicKey, signature)) throw new Error("signature did not verify");
+  };
+}
+
+function signatureSize(kind, digest, label = "signature") {
+  return [label, c.sign(digest, SYNTHETIC_MESSAGE, keyPair(kind).privateKey).length];
+}
 
 function bcryptOp(cost) {
   const b = bcryptLib();
@@ -181,12 +275,14 @@ function main() {
   if (!(args.duration > 0 && args.duration <= MAX_DURATION_S)) return fail(`duration must be in (0, ${MAX_DURATION_S}] seconds`);
   if (args.concurrency !== 1) return fail("the Node.js runner supports concurrency 1 only");
   if (!(args.warmup >= 0)) return fail("warmup must be >= 0");
-  const [algorithm, params, library, presetMinOps, build] = preset;
+  const [algorithm, params, library, presetMinOps, build, operation = "hash", wireSize = null] = preset;
   const minOps = args.minOps === null ? presetMinOps : Math.max(0, Math.floor(args.minOps));
   let op;
+  let wire = null;
   try {
     op = build();
     op(); // fail fast (missing library, unsupported Node.js) before announcing readiness
+    if (wireSize) wire = wireSize(); // measured here, before timing starts, so it costs the run nothing
   } catch (e) {
     return fail(`${args.preset}: ${e.message}`);
   }
@@ -226,6 +322,7 @@ function main() {
     : (ru1.voluntaryContextSwitches - ru0.voluntaryContextSwitches) + (ru1.involuntaryContextSwitches - ru0.involuntaryContextSwitches);
   emit({
     event: "result", preset: args.preset, variant: args.preset, algorithm, params, library: library(), concurrency: 1,
+    operation, wire_label: wire ? wire[0] : null, wire_bytes: wire ? wire[1] : null,
     duration_target_s: args.duration, min_ops: minOps, warmup_s: args.warmup,
     ops, wall_s: wall, ops_per_s: wall ? ops / wall : null,
     cpu_user_s: cpuUser, cpu_system_s: cpuSys, cpu_s_per_op: ops ? (cpuUser + cpuSys) / ops : null,
