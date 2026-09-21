@@ -131,6 +131,7 @@ def main(argv=None) -> int:
 
     proc = psutil.Process()
     op = preset.make_op()
+    wire = preset.wire_size()  # measured here, before timing starts, so it never costs a nanosecond
     overhead = timer_overhead_ns()
     rss_before = proc.memory_info().rss
     emit({"event": "ready", "pid": proc.pid, "preset": preset.id, "ts": now_iso()})
@@ -155,6 +156,8 @@ def main(argv=None) -> int:
     emit({
         "event": "result", "preset": preset.id, "variant": preset.label, "algorithm": preset.algorithm,
         "params": preset.params, "library": preset.library_version(), "concurrency": args.concurrency,
+        "operation": preset.operation,
+        "wire_label": wire[0] if wire else None, "wire_bytes": wire[1] if wire else None,
         "duration_target_s": args.duration, "min_ops": min_ops, "warmup_s": args.warmup,
         "ops": ops, "wall_s": wall, "ops_per_s": ops / wall if wall else None,
         "cpu_user_s": cpu_user, "cpu_system_s": cpu_sys, "cpu_s_per_op": (cpu_user + cpu_sys) / ops if ops else None,

@@ -29,6 +29,51 @@ _NOTES = {
                                    "OWASP's first choice."),
     "argon2id-rfc9106-low": (True, True, "Stronger than the OWASP minimum (m=64 MiB, t=3, p=4; the RFC 9106 "
                                          "low-memory option). Memory-hard; OWASP's first choice."),
+
+    # Key agreement and signatures. "Safe for passwords" is the wrong question for these, so it is False with
+    # a summary that says why, and the quantum standing below carries the meaning instead.
+    "mlkem768-keygen": (False, None, "ML-KEM-768 (FIPS 203) key generation, not password storage. Post-quantum "
+                                     "key agreement: a session key it protects cannot be recovered later by a "
+                                     "quantum computer, which is what 'harvest now, decrypt later' relies on."),
+    "mlkem768-encap": (False, None, "ML-KEM-768 (FIPS 203) encapsulation, not password storage. This is the "
+                                    "operation a client performs per connection; the ciphertext travels with the "
+                                    "handshake."),
+    "mlkem768-decap": (False, None, "ML-KEM-768 (FIPS 203) decapsulation, not password storage. This is the "
+                                    "operation a server performs per connection."),
+    "x25519-keygen": (False, None, "X25519 key generation, not password storage. Classical: recorded traffic can "
+                                   "be decrypted once a cryptographically relevant quantum computer exists. TLS "
+                                   "pairs X25519 with ML-KEM-768 rather than replacing it."),
+    "x25519-exchange": (False, None, "X25519 key exchange, not password storage. Classical, and the reason hybrid "
+                                     "key agreement exists: this is the part that needs ML-KEM beside it."),
+    "mldsa44-sign": (False, None, "ML-DSA-44 (FIPS 204) signing, not password storage. Post-quantum "
+                                  "authentication. Public CAs do not issue ML-DSA certificates yet, so today this "
+                                  "fits internal tokens, firmware and code signing rather than public TLS."),
+    "mldsa44-verify": (False, None, "ML-DSA-44 (FIPS 204) verification, not password storage. Verification is the "
+                                    "operation that runs on every request, so its cost is the one that scales."),
+    "mldsa65-sign": (False, None, "ML-DSA-65 (FIPS 204) signing, not password storage. A higher security level "
+                                  "than ML-DSA-44, with larger keys and signatures."),
+    "mldsa65-verify": (False, None, "ML-DSA-65 (FIPS 204) verification, not password storage."),
+    "ecdsa-p256-sign": (False, None, "ECDSA P-256 signing, not password storage. Classical, but signatures are "
+                                     "checked live rather than recorded, so there is no harvest-now-decrypt-later "
+                                     "exposure: migrating signatures is less urgent than migrating key agreement."),
+    "ecdsa-p256-verify": (False, None, "ECDSA P-256 verification, not password storage. Classical; this is what "
+                                       "signs TLS certificates and OIDC tokens today."),
+    "rsa2048-sign": (False, None, "RSA-2048 PKCS#1 v1.5 signing (what RS256 uses), not password storage. "
+                                  "Classical, and the slowest of the classical signers to produce."),
+    "rsa2048-verify": (False, None, "RSA-2048 PKCS#1 v1.5 verification (what RS256 uses), not password storage. "
+                                    "Classical, and very cheap to verify - which is why it is everywhere."),
+}
+
+# Standing against a future quantum computer. Only asymmetric algorithms are at risk: symmetric hashes lose
+# at most half their strength to Grover's algorithm, which SHA-256 and the password hashes absorb.
+QUANTUM_POST, QUANTUM_CLASSICAL, QUANTUM_SYMMETRIC = "post-quantum", "classical", "symmetric"
+_QUANTUM = {
+    "mlkem768-keygen": QUANTUM_POST, "mlkem768-encap": QUANTUM_POST, "mlkem768-decap": QUANTUM_POST,
+    "mldsa44-sign": QUANTUM_POST, "mldsa44-verify": QUANTUM_POST,
+    "mldsa65-sign": QUANTUM_POST, "mldsa65-verify": QUANTUM_POST,
+    "x25519-keygen": QUANTUM_CLASSICAL, "x25519-exchange": QUANTUM_CLASSICAL,
+    "ecdsa-p256-sign": QUANTUM_CLASSICAL, "ecdsa-p256-verify": QUANTUM_CLASSICAL,
+    "rsa2048-sign": QUANTUM_CLASSICAL, "rsa2048-verify": QUANTUM_CLASSICAL,
 }
 
 
@@ -109,4 +154,5 @@ def note_for_algorithm(algorithm: str | None, params: str | None = None) -> dict
 def security_note(preset: Preset) -> dict:
     safe, meets_minimum, summary = _NOTES[preset.base_id]
     return {"algorithm": preset.algorithm, "params": preset.params, "safe_for_passwords": safe,
-            "meets_owasp_minimum": meets_minimum, "summary": summary, "reference": REFERENCE}
+            "meets_owasp_minimum": meets_minimum, "summary": summary, "reference": REFERENCE,
+            "quantum": _QUANTUM.get(preset.base_id, QUANTUM_SYMMETRIC)}

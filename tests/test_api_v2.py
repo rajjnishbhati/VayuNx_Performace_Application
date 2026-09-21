@@ -58,9 +58,15 @@ def wait_for(url, exp_id, statuses=("complete", "failed", "cancelled"), timeout=
 
 def test_presets_have_security_context(live):
     status, presets = call(f"{live}/v2/presets")
-    assert status == 200 and len(presets) == 8
+    assert status == 200 and len(presets) == 21  # 8 hashes + 7 post-quantum + 6 classical asymmetric
     md5 = next(p for p in presets if p["id"] == "md5")
     assert md5["security"]["safe_for_passwords"] is False and md5["label"] == "MD5"
+    assert md5["security"]["quantum"] == "symmetric"
+
+    kem = next(p for p in presets if p["id"] == "mlkem768-encap")
+    assert kem["family"] == "kem" and kem["operation"] == "encapsulate"
+    assert kem["security"]["quantum"] == "post-quantum"
+    assert next(p for p in presets if p["id"] == "x25519-exchange")["security"]["quantum"] == "classical"
     assert md5["node"]["id"] == "md5@node" and md5["node"]["label"] == "MD5 · Node.js"
     assert isinstance(md5["node"]["available"], bool) and (md5["node"]["available"] or md5["node"]["reason"])
 
